@@ -183,7 +183,7 @@ The library follows semantic versioning. While the version is v0, a minor releas
 
 ## Contributing
 
-To add an endpoint, add one URL builder row to the right table in `endpoints.go` and one expected URL to `jsURLs` in `endpoints_test.go`, and update the count in the endpoint table test. Every test name starts with a technique ID (EP, BVA, DT, ST, EG, CL), and each ID is unique in the repository. Run `gofmt -l .`, `go vet ./...` and `go test -race ./...` before you open a pull request. Never include real account data, real tokens or captured Garmin answers in a pull request; write small fixtures by hand.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks, the test conventions and how to add an endpoint, and [SECURITY.md](SECURITY.md) to report a security problem. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
