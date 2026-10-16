@@ -1,8 +1,9 @@
-// Package gconnect signs in to Garmin Connect. It never touches the disk or the
-// environment: the caller stores the tokens and picks the hosts. The token types keep
-// the field names of electron-app/garmin/auth.js, so a caller can save them as tokens.json.
 package gconnect
 
+// The token types keep the JSON field names Garmin and the garth project use, so a caller
+// can marshal Tokens as is and read the file back later.
+
+// DI is a login from the DI mobile flow (diauth.garmin.com).
 type DI struct {
 	AccessToken           string `json:"access_token"`
 	RefreshToken          string `json:"refresh_token,omitempty"`
@@ -11,11 +12,13 @@ type DI struct {
 	RefreshTokenExpiresAt *int64 `json:"refresh_token_expires_at"` // null when Garmin sends no lifetime
 }
 
+// OAuth1 is the long lived token of the older login. It mints new OAuth2 tokens.
 type OAuth1 struct {
 	Token  string `json:"oauth_token"`
 	Secret string `json:"oauth_token_secret"`
 }
 
+// OAuth2 is the access token of the older login. Times are unix seconds.
 type OAuth2 struct {
 	AccessToken           string `json:"access_token"`
 	TokenType             string `json:"token_type"`
@@ -24,11 +27,14 @@ type OAuth2 struct {
 	RefreshTokenExpiresAt int64  `json:"refresh_token_expires_at"`
 }
 
+// Consumer is the OAuth1 consumer key and secret the older login signs with. Login fetches it
+// from Hosts.Consumer.
 type Consumer struct {
 	Key    string `json:"consumer_key"`
 	Secret string `json:"consumer_secret"`
 }
 
+// Tokens holds one login: DI, or OAuth1 + OAuth2 + Consumer for the older flow.
 type Tokens struct {
 	DI       *DI       `json:"di,omitempty"`
 	OAuth1   *OAuth1   `json:"oauth1,omitempty"`
@@ -36,8 +42,10 @@ type Tokens struct {
 	Consumer *Consumer `json:"consumer,omitempty"`
 }
 
+// Kind says which login a Tokens value holds.
 type Kind int
 
+// The kinds of login. KindNone means neither login is complete.
 const (
 	KindNone Kind = iota
 	KindDI

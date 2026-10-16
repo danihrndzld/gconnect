@@ -65,7 +65,7 @@ func TestLoginDecisionTable(t *testing.T) {
 		t.Run(c.id, func(t *testing.T) {
 			srv.Reset()
 			if c.set != nil {
-				c.set(srv.Control())
+				srv.Set(c.set)
 			}
 			var logs []string
 			a := &gconnect.Auth{Hosts: srv.Hosts(), Log: func(m string) { logs = append(logs, m) }}
@@ -146,13 +146,13 @@ func TestJWTHelperReadable(t *testing.T) {
 }
 
 func TestSignOAuth1MatchesAuthJs(t *testing.T) {
-	t.Run("CL-222 the OAuth1 signature matches auth.js", func(t *testing.T) {
+	t.Run("CL-222 the OAuth1 signature matches the JavaScript implementation", func(t *testing.T) {
 		params := map[string]string{
 			"oauth_consumer_key": "ck", "oauth_nonce": "n", "oauth_signature_method": "HMAC-SHA1",
 			"oauth_timestamp": "1", "oauth_version": "1.0", "ticket": "ST-1",
 			"login-url": "https://sso.garmin.com/sso/embed", "accepts-mfa-tokens": "true",
 		}
-		// node -e "console.log(require('./electron-app/garmin/auth').signOAuth1(...))", see the task 3 brief.
+		// Computed once with the Garmin Export app's JavaScript signOAuth1, which this code was ported from.
 		if got := gconnect.SignOAuth1("GET", "https://x/oauth-service/oauth/preauthorized", params, "cs", ""); got != "vuDWLkAGwPDSl8r0q3ly059MkjE=" {
 			t.Fatalf("CL-222 signature %s", got)
 		}
@@ -220,7 +220,7 @@ func TestRefreshClassifiesGarminAnswers(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.id, func(t *testing.T) {
 			srv.Reset()
-			srv.Control().RefreshFail = c.status
+			srv.Set(func(k *gconnecttest.Control) { k.RefreshFail = c.status })
 			if c.status == 0 {
 				srv.Close()
 			}

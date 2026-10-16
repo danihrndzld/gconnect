@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Ported from electron-app/util/redact.js:10-23.
+// Keys whose values are secret: an exact name, or a name that holds one of the substrings.
 var (
 	secretQueryKeys  = []string{"token", "access_token", "refresh_token", "id_token", "code", "sig", "signature", "key", "apikey", "api_key", "jwt", "sessionid", "session_id", "authorization"}
 	secretSubstrings = []string{"auth", "secret", "password", "passwd", "pwd"}
@@ -46,10 +46,10 @@ func redactParams(re *regexp.Regexp, s string) string {
 	})
 }
 
-// RedactURL ports redactUrl (redact.js:26-32): secret query values become REDACTED.
+// RedactURL replaces the value of every secret query parameter in u with REDACTED.
 func RedactURL(u string) string { return redactParams(urlParamRE, u) }
 
-// Redact ports redactString (redact.js:42-69): Bearer and Basic values, cookie headers,
+// Redact hides secrets in free text: Bearer and Basic values, cookie headers,
 // JWT shaped strings, JSON pairs with secret keys, and secret query values.
 func Redact(s string) string {
 	s = authHeaderRE.ReplaceAllString(s, "${1}${2} REDACTED")

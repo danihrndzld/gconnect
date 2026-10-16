@@ -1,7 +1,7 @@
-// Package gconnecttest is a fake Garmin for tests, ported from
-// electron-app/garmin/__tests__/helpers/fake-garmin.js: SSO (widget and mobile login),
-// diauth, the S3 OAuth consumer file, the oauth-service OAuth1 to OAuth2 exchange and
-// connectapi. Point a gconnect.Auth at it with Hosts().
+// Package gconnecttest is a fake Garmin for tests: SSO (widget and mobile login), diauth,
+// the OAuth consumer file, the oauth-service OAuth1 to OAuth2 exchange and connectapi, all
+// on one httptest server. Point a gconnect.Auth at it with Hosts(). It issues synthetic
+// tokens only, and connectapi accepts only the tokens it issued.
 package gconnecttest
 
 import (
@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +20,8 @@ import (
 	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect"
 )
 
+// Control holds the knobs that pick how the fake answers. The zero value of each field is
+// replaced by its default in New and Reset.
 type Control struct {
 	Password     string // default "right-password"
 	MobileLogin  string // "ok" | "mfa" | "cloudflare" | "429" | "captcha"
@@ -27,16 +30,18 @@ type Control struct {
 	TokenTTL     int    // seconds, default 3600
 	Widget429    bool
 	WidgetStatus int
-	DataStatus   map[string]int // path prefix -> status, every time
-	FailOnce     map[string]int // path prefix -> status, once
+	DataStatus   map[string]int // path prefix -> status, every time; the longest matching prefix wins
+	FailOnce     map[string]int // path prefix -> status, once; the longest matching prefix wins
 }
 
+// Call is one request the fake received.
 type Call struct {
 	Method, Path, Query string
 	Header              http.Header
 	Body                string
 }
 
+// Server is the fake. Its methods are safe for concurrent use.
 type Server struct {
 	mu      sync.Mutex
 	control Control
@@ -51,15 +56,21 @@ func defaults() Control {
 	return Control{Password: "right-password", MobileLogin: "ok", DIAuth: "ok", TokenTTL: 3600, DataStatus: map[string]int{}, FailOnce: map[string]int{}}
 }
 
+// New starts a fake with the default knobs. Close it when the test ends.
 func New() *Server {
 	s := &Server{control: defaults(), valid: map[string]bool{}, routes: map[string]http.HandlerFunc{}}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
 }
 
-func (s *Server) URL() string           { return s.srv.URL }
+// URL is the fake's base URL, such as http://127.0.0.1:54321.
+func (s *Server) URL() string { return s.srv.URL }
+
+// Hosts points every Garmin host at the fake.
 func (s *Server) Hosts() gconnect.Hosts { return gconnect.SameHost(s.srv.URL) }
-func (s *Server) Close()                { s.srv.Close() }
+
+// Close shuts the fake down; later requests fail with a network error.
+func (s *Server) Close() { s.srv.Close() }
 
 // Handle serves a connectapi data route at exactly path, or, when path ends in "/", at every
 // path under it (as in http.ServeMux; the longest match wins). The fake still answers 401 to
@@ -77,11 +88,14 @@ func (s *Server) Set(f func(*Control)) {
 	f(&s.control)
 }
 
-// Control returns the knobs. Change them between requests, never during one; use Set otherwise.
-func (s *Server) Control() *Control {
+// Control returns a copy of the knobs. Change them with Set.
+func (s *Server) Control() Control {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return &s.control
+	c := s.control
+	c.DataStatus = maps.Clone(c.DataStatus)
+	c.FailOnce = maps.Clone(c.FailOnce)
+	return c
 }
 
 // Calls returns the recorded requests to path, or all of them when path is "".
@@ -97,7 +111,7 @@ func (s *Server) Calls(path string) []Call {
 	return out
 }
 
-// Reset restores the default knobs and clears the calls. Issued tokens stay valid, as in the JS.
+// Reset restores the default knobs and clears the calls. Issued tokens and Handle routes stay.
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,7 +119,7 @@ func (s *Server) Reset() {
 	s.calls = nil
 }
 
-// JWT builds an unsigned token whose payload is claims, like fake-garmin.js:jwt.
+// JWT builds an unsigned token whose payload is claims, the shape diauth issues.
 func JWT(claims any) string {
 	b64 := func(v any) string {
 		b, _ := json.Marshal(v)
@@ -149,7 +163,7 @@ func (s *Server) newDIToken(ttl int) obj {
 	return obj{"access_token": access, "token_type": "bearer", "refresh_token": fmt.Sprintf("refresh-%d", s.issued), "expires_in": ttl, "refresh_token_expires_in": 2592000, "scope": "x", "jti": fmt.Sprint(s.issued)}
 }
 
-// serve ports fake-garmin.js:69-139 route by route.
+// serve answers one request.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	body, p := string(raw), r.URL.Path
@@ -243,18 +257,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	ok := s.valid[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
 	once, always := 0, 0
-	for prefix, status := range s.control.FailOnce {
-		if ok && strings.HasPrefix(p, prefix) {
-			delete(s.control.FailOnce, prefix)
-			once = status
-			break
-		}
+	if prefix, ok2 := longest(s.control.FailOnce, p); ok && ok2 {
+		once = s.control.FailOnce[prefix]
+		delete(s.control.FailOnce, prefix)
 	}
-	for prefix, status := range s.control.DataStatus {
-		if strings.HasPrefix(p, prefix) {
-			always = status
-			break
-		}
+	if prefix, ok2 := longest(s.control.DataStatus, p); ok2 {
+		always = s.control.DataStatus[prefix]
 	}
 	s.mu.Unlock()
 	retry := func(status int) []string {
@@ -290,9 +298,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		h(w, r)
 		return
 	}
-	if p == "/userprofile-service/socialProfile" {
+	if p == "/userprofile-service/socialProfile" { // a default profile, so Client.Profile works without a route
 		send(w, 200, obj{"displayName": "displayName-redacted", "id": 1})
 		return
 	}
 	send(w, 404, obj{"message": "fake garmin has no route for " + p + "?" + r.URL.RawQuery})
+}
+
+// longest returns the longest key of m that is a prefix of p.
+func longest(m map[string]int, p string) (string, bool) {
+	best, found := "", false
+	for prefix := range m {
+		if strings.HasPrefix(p, prefix) && (!found || len(prefix) > len(best)) {
+			best, found = prefix, true
+		}
+	}
+	return best, found
 }

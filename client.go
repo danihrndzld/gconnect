@@ -25,8 +25,10 @@ type Result struct {
 	Err    string // redacted; a body preview is at most 200 characters
 }
 
+// StopReason says why a Client stopped a run.
 type StopReason string
 
+// The reasons a run stops.
 const (
 	StopSessionDead   StopReason = "session_dead"   // Garmin refused the login; the caller marks it expired
 	StopRateLimited   StopReason = "rate_limited"   // 429 after 2 retries
@@ -40,20 +42,21 @@ type StopError struct {
 	Msg    string
 }
 
+// Error returns Msg.
 func (e *StopError) Error() string { return e.Msg }
 
-// Client ports electron-app/garmin/client.js:97-420: a paced, rate limit aware GET client.
+// Client is a paced, rate limit aware GET client for connectapi.
 // It is not safe for concurrent requests: an export asks one thing at a time, and Tokens,
 // the pause and the 403 streak are not guarded. Only Stopped may be called from another goroutine.
 type Client struct {
 	Auth     *Auth
 	Tokens   *Tokens
-	OnTokens func(*Tokens) error // called after every refresh; on an error the client logs SAVE_FAILED and goes on
-	Gap      time.Duration       // minimum time between requests; 0 means 500 ms; a negative value disables the pause (for a loopback fake only)
-	Timeout  time.Duration       // per attempt; 0 means 30 s
-	Sleep    func(context.Context, time.Duration) error
-	Jitter   func() time.Duration         // added to the network backoff; nil means 0 to 999 ms
-	Log      func(kind, msg, code string) // "dim" lines with code "", "warn" lines with an error code
+	OnTokens func(*Tokens) error                        // called after every refresh, so the caller can save them; on an error the client logs SAVE_FAILED and goes on
+	Gap      time.Duration                              // minimum time between requests; 0 means 500 ms; a negative value disables the pause (for a loopback fake only)
+	Timeout  time.Duration                              // per attempt; 0 means 30 s
+	Sleep    func(context.Context, time.Duration) error // nil: a timer that ends early when ctx is done
+	Jitter   func() time.Duration                       // added to the network backoff; nil means 0 to 999 ms
+	Log      func(kind, msg, code string)               // "dim" lines with code "", "warn" lines with an error code
 
 	last      time.Time
 	forbidden int
@@ -62,7 +65,7 @@ type Client struct {
 }
 
 const (
-	refreshMargin    = 900 * time.Second // auth.js REFRESH_MARGIN_S
+	refreshMargin    = 900 * time.Second // refresh this long before the access token expires
 	maxRetries       = 5                 // network errors and timeouts
 	maxRateRetries   = 2                 // HTTP 429
 	maxRetryAfter    = 60 * time.Second
@@ -105,7 +108,7 @@ func (c *Client) stopWith(reason StopReason, msg string) {
 	}
 }
 
-// throttle ports client.js:134-141.
+// throttle waits until Gap has passed since the last request.
 func (c *Client) throttle(ctx context.Context) error {
 	gap := c.Gap
 	if gap == 0 {
@@ -120,7 +123,7 @@ func (c *Client) throttle(ctx context.Context) error {
 	return nil
 }
 
-// backoff ports client.js:40-44: min(5000 * 2^attempt + jitter, 60000) ms.
+// backoff is min(5000 * 2^attempt + jitter, 60000) ms.
 func (c *Client) backoff(attempt int) time.Duration {
 	j := time.Duration(rand.IntN(1000)) * time.Millisecond
 	if c.Jitter != nil {
@@ -129,7 +132,7 @@ func (c *Client) backoff(attempt int) time.Duration {
 	return min(5*time.Second<<attempt+j, maxRetryAfter)
 }
 
-// retryAfter ports retryAfterMs (client.js:47-53): seconds or an HTTP date, capped at 60 s.
+// retryAfter reads a Retry-After value: seconds or an HTTP date, capped at 60 s.
 func retryAfter(raw string, now time.Time) (time.Duration, bool) {
 	if raw == "" {
 		return 0, false
@@ -148,7 +151,8 @@ func retryAfter(raw string, now time.Time) (time.Duration, bool) {
 	return min(max(d, 0), maxRetryAfter), true
 }
 
-// preview ports trimPreview (client.js:55-60): redact first so no secret survives the cut.
+// preview is a one line, redacted body preview of at most 200 characters. It redacts first so
+// no secret survives the cut.
 func preview(body []byte) string {
 	s := strings.Join(strings.Fields(Redact(string(body))), " ")
 	if r := []rune(s); len(r) > previewMaxLength {
@@ -222,8 +226,8 @@ func (c *Client) headers(extra http.Header) http.Header {
 	return h
 }
 
-// get ports fetchUrl (client.js:151-341). A second 401 stops with StopSessionDead and does
-// not clear anything: the caller marks the login expired.
+// get sends one request with the retry rules. A second 401 stops with StopSessionDead and
+// does not clear anything: the caller decides what to do with the saved login.
 func (c *Client) get(ctx context.Context, name, u string, extra http.Header) Result {
 	if s := c.Stopped(); s != nil {
 		code := "AUTH"
@@ -316,7 +320,7 @@ func (c *Client) get(ctx context.Context, name, u string, extra http.Header) Res
 				}
 				continue
 			}
-			c.stopWith(StopRateLimited, "Garmin is rate limiting requests (HTTP 429). The data so far is cached; try again in an hour.")
+			c.stopWith(StopRateLimited, "Garmin is rate limiting requests (HTTP 429). Try again in an hour.")
 			return Result{Status: 429, Code: "RATE_LIMIT", Err: fmt.Sprintf("Rate limited (429) after %d attempts. Try again later.", rateAttempt+1)}
 		}
 
@@ -352,11 +356,7 @@ func (c *Client) send(ctx context.Context, u string, h http.Header, timeout time
 		return 0, nil, nil, err
 	}
 	req.Header = h.Clone()
-	hc := http.DefaultClient
-	if c.Auth.HTTP != nil {
-		hc = c.Auth.HTTP
-	}
-	resp, err := hc.Do(req)
+	resp, err := c.Auth.client().Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
@@ -368,7 +368,7 @@ func (c *Client) send(ctx context.Context, u string, h http.Header, timeout time
 	return resp.StatusCode, resp.Header, b, nil
 }
 
-// Safe ports safe (client.js:384-403): nil when there is nothing. A failure logs a "warn"
+// Safe is Get for callers that skip what fails: it returns nil when there is nothing. A failure logs a "warn"
 // [skip] line with its code; no data logs a "dim" [no data] line.
 func (c *Client) Safe(ctx context.Context, ep Endpoint, p Params) json.RawMessage {
 	r := c.Get(ctx, ep, p)
@@ -382,7 +382,7 @@ func (c *Client) Safe(ctx context.Context, ep Endpoint, p Params) json.RawMessag
 	return r.Data
 }
 
-// Profile ports getDisplayName (client.js:411-419). Six daily URLs need the display name.
+// Profile returns the display name from the social profile. Six daily URLs need it.
 func (c *Client) Profile(ctx context.Context) (string, error) {
 	r := c.Get(ctx, endpoints["social_profile"], Params{})
 	if r.Code != "" {

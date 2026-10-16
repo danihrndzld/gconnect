@@ -6,9 +6,9 @@ import (
 	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect"
 )
 
-// jsURLs was built once from endpoints.js allEndpoints with GARMIN_FAKE_SERVER=http://127.0.0.1:1,
-// date 2026-10-07, range 2026-10-01..2026-10-07, displayName dn and activityId 42.
-// activity_details and activity_split_summaries are left out: the export never asks for them.
+// jsURLs was built once from the endpoint table of the Garmin Export app (JavaScript), which
+// these endpoints were ported from, with the base http://127.0.0.1:1, date 2026-10-07, range
+// 2026-10-01..2026-10-07, displayName dn and activityId 42.
 var jsURLs = map[string]string{
 	"stats":                      "http://127.0.0.1:1/usersummary-service/usersummary/daily/dn?calendarDate=2026-10-07",
 	"user_summary":               "http://127.0.0.1:1/usersummary-service/usersummary/daily/dn?calendarDate=2026-10-07",
@@ -52,9 +52,9 @@ var jsURLs = map[string]string{
 
 func TestEndpointTable(t *testing.T) {
 	p := gconnect.Params{Date: "2026-10-07", Start: "2026-10-01", End: "2026-10-07", DisplayName: "dn", ActivityID: "42"}
-	t.Run("CL-331 every endpoint builds the URL endpoints.js builds", func(t *testing.T) {
+	t.Run("CL-331 every endpoint builds the URL the JavaScript table builds", func(t *testing.T) {
 		seen := map[string]bool{}
-		for _, list := range [][]gconnect.Endpoint{gconnect.Daily, gconnect.Aggregated, gconnect.Activity, gconnect.List} {
+		for _, list := range [][]gconnect.Endpoint{gconnect.Daily(), gconnect.Aggregated(), gconnect.Activity(), gconnect.List()} {
 			for _, ep := range list {
 				if seen[ep.Name] {
 					t.Errorf("%s is listed twice", ep.Name)

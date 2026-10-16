@@ -292,7 +292,7 @@ func TestClientHeaders(t *testing.T) {
 		srv, c, _ := signedIn(t, nil)
 		c.Get(ctx, ep("hrv"), gconnect.Params{Date: day})
 		got := srv.Calls(hrvPath)[0].Header
-		native := map[string]string{ // auth.js:71-80 NATIVE_HEADERS
+		native := map[string]string{ // what the Android app sends (measured 2026-10-14)
 			"User-Agent":                  "GCM-Android-5.23",
 			"X-Garmin-User-Agent":         "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; Android/33; Dalvik/2.1.0",
 			"X-Garmin-Paired-App-Version": "10861",

@@ -12,11 +12,11 @@ type Params struct {
 	Offset, Limit                             int
 }
 
-// Endpoint ports one entry of electron-app/garmin/endpoints.js. URL joins base (the connectapi
-// host) and the path; it never reads the hosts itself.
+// Endpoint is one connectapi request. URL joins base (the connectapi host) and the path; it
+// never reads the hosts itself.
 type Endpoint struct {
-	Name, Type, AliasOf string // Type: daily, aggregated, activity, list; AliasOf: same URL as that endpoint
-	Header              http.Header
+	Name, Type, AliasOf string      // Type: daily, aggregated, activity, list; AliasOf: same URL as that endpoint
+	Header              http.Header // extra request headers, or nil
 	URL                 func(base string, p Params) string
 }
 
@@ -28,8 +28,8 @@ func aggregated(name string, path func(p Params) string) Endpoint {
 	return Endpoint{Name: name, Type: "aggregated", URL: func(base string, p Params) string { return base + path(p) }}
 }
 
-// Daily ports endpoints.js:19-156.
-var Daily = []Endpoint{
+// dailyList is one request per day.
+var dailyList = []Endpoint{
 	daily("stats", "", func(p Params) string {
 		return "/usersummary-service/usersummary/daily/" + p.DisplayName + "?calendarDate=" + p.Date
 	}),
@@ -71,8 +71,8 @@ var Daily = []Endpoint{
 	}),
 }
 
-// Aggregated ports endpoints.js:163-238.
-var Aggregated = []Endpoint{
+// aggregatedList is one request per date range.
+var aggregatedList = []Endpoint{
 	aggregated("blood_pressure", func(p Params) string {
 		return "/bloodpressure-service/bloodpressure/range/" + p.Start + "/" + p.End + "?includeAll=true"
 	}),
@@ -98,16 +98,15 @@ var Aggregated = []Endpoint{
 	}),
 }
 
-// Activity ports endpoints.js:245-267 without activity_details and activity_split_summaries,
-// which the export never requests.
-var Activity = []Endpoint{
+// activityList is one request per activity.
+var activityList = []Endpoint{
 	{Name: "activity_splits", Type: "activity", URL: func(base string, p Params) string {
 		return base + "/activity-service/activity/" + p.ActivityID + "/splits"
 	}},
 }
 
-// List ports endpoints.js:274-299.
-var List = []Endpoint{
+// listList pages through lists, plus the profile.
+var listList = []Endpoint{
 	{Name: "activities_by_date", Type: "list", URL: func(base string, p Params) string {
 		limit := p.Limit
 		if limit == 0 {
@@ -125,7 +124,7 @@ var List = []Endpoint{
 
 var endpoints = func() map[string]Endpoint {
 	m := map[string]Endpoint{}
-	for _, list := range [][]Endpoint{Daily, Aggregated, Activity, List} {
+	for _, list := range [][]Endpoint{dailyList, aggregatedList, activityList, listList} {
 		for _, ep := range list {
 			m[ep.Name] = ep
 		}
@@ -133,8 +132,35 @@ var endpoints = func() map[string]Endpoint {
 	return m
 }()
 
-// Lookup finds an endpoint by its endpoints.js name.
+// Lookup finds an endpoint by name. The result is a copy the caller may change.
 func Lookup(name string) (Endpoint, bool) {
 	ep, ok := endpoints[name]
-	return ep, ok
+	return clone(ep), ok
 }
+
+func clone(ep Endpoint) Endpoint {
+	ep.Header = ep.Header.Clone()
+	return ep
+}
+
+func cloneAll(list []Endpoint) []Endpoint {
+	out := make([]Endpoint, len(list))
+	for i, ep := range list {
+		out[i] = clone(ep)
+	}
+	return out
+}
+
+// Daily returns the endpoints that take Params.Date (and DisplayName for six of them), in a
+// fixed order. Each call returns a new copy.
+func Daily() []Endpoint { return cloneAll(dailyList) }
+
+// Aggregated returns the endpoints that take Params.Start and End (some also DisplayName), in
+// a fixed order. Each call returns a new copy.
+func Aggregated() []Endpoint { return cloneAll(aggregatedList) }
+
+// Activity returns the endpoints that take Params.ActivityID. Each call returns a new copy.
+func Activity() []Endpoint { return cloneAll(activityList) }
+
+// List returns the activity list, goals and the social profile. Each call returns a new copy.
+func List() []Endpoint { return cloneAll(listList) }

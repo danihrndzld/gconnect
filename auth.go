@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-// Constants from auth.js:57-93.
+// Hosts, client ids and user agents the Garmin Connect mobile app uses.
 const (
 	gcModern      = "https://connect.garmin.com/modern"
 	mobileService = "https://mobile.integration.garmin.com/gcm/ios" // the ticket is only valid for this service
@@ -40,7 +40,7 @@ var diClientIDs = []string{
 }
 
 // connectapi answers 403 to a DI token without these (measured 2026-10-14). The keys are
-// set as written, not canonicalized, so the wire matches auth.js:71-80.
+// set as written, not canonicalized, so the wire matches what the Android app sends.
 var nativeHeaders = [][2]string{
 	{"User-Agent", "GCM-Android-5.23"},
 	{"X-Garmin-User-Agent", "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; Android/33; Dalvik/2.1.0"},
@@ -76,8 +76,10 @@ func (h Hosts) diauth() string     { return or(h.DIAuth, "https://diauth.garmin.
 func (h Hosts) connectAPI() string { return or(h.ConnectAPI, "https://connectapi.garmin.com") }
 func (h Hosts) consumer() string   { return or(h.Consumer, "https://thegarth.s3.amazonaws.com") }
 
+// LoginCode names why a sign in failed.
 type LoginCode string
 
+// The sign in failures. Every *LoginError from Login carries one of these.
 const (
 	BadPassword LoginCode = "bad_password"
 	MFARequired LoginCode = "mfa"
@@ -92,28 +94,35 @@ type LoginError struct {
 	Msg  string
 }
 
+// Error returns Msg.
 func (e *LoginError) Error() string { return e.Msg }
 
 var errRateLimited = &LoginError{RateLimited, "Garmin is rate limiting sign ins (HTTP 429). Wait 15 minutes and try again."}
 
 var (
-	// ErrSessionDead means Garmin proved the saved login is dead; the caller marks it expired.
+	// ErrSessionDead means Garmin proved the saved login is dead; the caller should ask the
+	// user to sign in again.
 	ErrSessionDead = errors.New("gconnect: the saved login is no longer valid")
-	ErrNoTokens    = errors.New("gconnect: the tokens hold neither a DI nor a legacy login")
+	// ErrNoTokens means Refresh or Fresh got tokens whose Kind is KindNone.
+	ErrNoTokens = errors.New("gconnect: the tokens hold neither a DI nor a legacy login")
 )
 
+// signInTimeout bounds each sign in and refresh request, whatever the HTTP client.
+const signInTimeout = 30 * time.Second
+
+// Auth signs in and refreshes tokens. The zero value talks to the real Garmin.
 type Auth struct {
 	Hosts Hosts
-	HTTP  *http.Client     // nil: 30 s timeout
+	HTTP  *http.Client     // nil: http.DefaultClient, for sign in and data alike
 	Now   func() time.Time // nil: time.Now
-	Log   func(msg string) // dim lines; never receives the password
+	Log   func(msg string) // progress lines for people; never receives the password
 }
 
 func (a *Auth) client() *http.Client {
 	if a.HTTP != nil {
 		return a.HTTP
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return http.DefaultClient
 }
 
 func (a *Auth) now() time.Time {
@@ -129,9 +138,11 @@ func (a *Auth) log(format string, args ...any) {
 	}
 }
 
-// do sends one request and reads at most 1 MB of the answer.
+// do sends one request and reads at most 1 MB of the answer, within signInTimeout.
 func do(c *http.Client, req *http.Request) (int, []byte, error) {
-	resp, err := c.Do(req)
+	ctx, cancel := context.WithTimeout(req.Context(), signInTimeout)
+	defer cancel()
+	resp, err := c.Do(req.WithContext(ctx))
 	if ue := (*url.Error)(nil); errors.As(err, &ue) {
 		err = ue.Err // the URL can hold the OAuth1 token and signature
 	}
@@ -143,8 +154,8 @@ func do(c *http.Client, req *http.Request) (int, []byte, error) {
 	return resp.StatusCode, b, err
 }
 
-// OAuth 1.0a signing, auth.js:122-154. percentEncode is RFC 3986, like encodeURIComponent
-// plus !*'() escaped.
+// OAuth 1.0a signing (RFC 5849, HMAC-SHA1). percentEncode is RFC 3986, like
+// encodeURIComponent plus !*'() escaped.
 func percentEncode(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
@@ -221,8 +232,9 @@ func Headers(t *Tokens) http.Header {
 	return h
 }
 
-// Login ports auth.js:login and _loginChain (202-239). It returns the tokens and saves
-// nothing. Every failure is a *LoginError; after RateLimited the caller should wait 15 minutes.
+// Login signs in with the DI mobile flow and, when that flow is blocked, once with the older
+// widget flow. It returns the tokens and saves nothing. Every failure is a *LoginError; after
+// RateLimited the caller should wait 15 minutes. Never call Login in a loop.
 func (a *Auth) Login(ctx context.Context, email, password string) (*Tokens, error) {
 	t, err := a.chain(ctx, email, password)
 	if err == nil {
@@ -263,8 +275,8 @@ func (a *Auth) chain(ctx context.Context, email, password string) (*Tokens, erro
 	return a.legacyFromTicket(ctx, ticket)
 }
 
-// loginMobile ports _loginMobile (259-287): one JSON POST, no cookies or CSRF. A plain
-// error means the login was blocked and the widget flow may try.
+// loginMobile is the DI mobile login: one JSON POST, no cookies or CSRF. A plain error means
+// the login was blocked and the widget flow may try.
 func (a *Auth) loginMobile(ctx context.Context, email, password string) (string, error) {
 	sso := a.Hosts.sso()
 	qs := url.Values{"clientId": {"GCM_IOS_DARK"}, "locale": {"en-US"}, "service": {mobileService}}.Encode()
@@ -303,7 +315,7 @@ func (a *Auth) loginMobile(ctx context.Context, email, password string) (string,
 	case t == "INVALID_USERNAME_PASSWORD":
 		return "", &LoginError{BadPassword, "Wrong email or password."}
 	case t == "MFA_REQUIRED":
-		return "", &LoginError{MFARequired, "This account uses two step verification, which Garmin Export does not support yet."}
+		return "", &LoginError{MFARequired, "This account uses two step verification, which gconnect does not support."}
 	case r.Error != nil && fmt.Sprint(r.Error["status-code"]) == "429":
 		return "", errRateLimited
 	case t != "":
@@ -312,7 +324,8 @@ func (a *Auth) loginMobile(ctx context.Context, email, password string) (string,
 	return "", fmt.Errorf("HTTP %d", status)
 }
 
-// exchangeTicketForDI ports _exchangeTicketForDi (290-304). A *LoginError (429) stops the chain.
+// exchangeTicketForDI trades the service ticket for DI tokens, trying each client id in turn.
+// A *LoginError (429) stops the chain.
 func (a *Auth) exchangeTicketForDI(ctx context.Context, ticket string) (*DI, error) {
 	err := errors.New("no client id accepted the ticket")
 	for _, id := range diClientIDs {
@@ -330,7 +343,7 @@ func (a *Auth) exchangeTicketForDI(ctx context.Context, ticket string) (*DI, err
 	return nil, err
 }
 
-// diTokenRequest ports _diTokenRequest (306-341). status is 0 on a network error.
+// diTokenRequest posts one grant to diauth. status is 0 on a network error.
 func (a *Auth) diTokenRequest(ctx context.Context, clientID string, form url.Values) (*DI, int, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", a.Hosts.diauth()+"/di-oauth2-service/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
@@ -380,7 +393,7 @@ func (a *Auth) diTokenRequest(ctx context.Context, clientID string, form url.Val
 	return di, status, nil
 }
 
-// orDefault returns v, or def when v is 0 (the JS `v || def`).
+// orDefault returns v, or def when v is 0.
 func orDefault(v, def int64) int64 {
 	if v == 0 {
 		return def
@@ -388,8 +401,8 @@ func orDefault(v, def int64) int64 {
 	return v
 }
 
-// loginWidget ports _loginWidget (344-437): sso/embed, the signin page's CSRF token, then
-// the form POST. Redirects are not followed, like the JS `redirect: 'manual'`.
+// loginWidget is the older web login: sso/embed, the signin page's CSRF token, then the form
+// POST. Redirects are not followed.
 func (a *Auth) loginWidget(ctx context.Context, email, password string) (string, error) {
 	jar, _ := cookiejar.New(nil)
 	c := *a.client()
@@ -453,8 +466,8 @@ func (a *Auth) loginWidget(ctx context.Context, email, password string) (string,
 	return string(t[1]), nil
 }
 
-// legacyFromTicket ports _legacyFromTicket (440-512): the S3 consumer, OAuth1 preauthorized,
-// then the OAuth2 exchange.
+// legacyFromTicket turns a widget ticket into tokens: the OAuth consumer file, OAuth1
+// preauthorized, then the OAuth2 exchange.
 func (a *Auth) legacyFromTicket(ctx context.Context, ticket string) (*Tokens, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", a.Hosts.consumer()+"/oauth_consumer.json", nil)
 	if err != nil {
@@ -510,7 +523,7 @@ func (a *Auth) legacyFromTicket(ctx context.Context, ticket string) (*Tokens, er
 	return &Tokens{OAuth1: o1, OAuth2: o2, Consumer: &consumer}, nil
 }
 
-// exchangeOAuth1ForOAuth2 ports _exchangeOAuth1ForOAuth2 (638-689). status is 0 on a network error.
+// exchangeOAuth1ForOAuth2 mints an OAuth2 token with the OAuth1 token. status is 0 on a network error.
 func (a *Auth) exchangeOAuth1ForOAuth2(ctx context.Context, consumer *Consumer, o1 *OAuth1) (*OAuth2, int, error) {
 	u := a.Hosts.connectAPI() + "/oauth-service/oauth/exchange/user/2.0"
 	params := map[string]string{
@@ -552,8 +565,8 @@ func (a *Auth) exchangeOAuth1ForOAuth2(ctx context.Context, consumer *Consumer, 
 	}, status, nil
 }
 
-// Fresh ports loadTokens (518-557): it refreshes t when the access token expires within
-// margin. refreshed tells the caller to store the new tokens.
+// Fresh refreshes t when the access token expires within margin, and returns t otherwise.
+// refreshed tells the caller to store the new tokens.
 func (a *Auth) Fresh(ctx context.Context, t *Tokens, margin time.Duration) (tok *Tokens, refreshed bool, err error) {
 	if t.Kind() == KindNone {
 		return nil, false, ErrNoTokens
@@ -565,7 +578,7 @@ func (a *Auth) Fresh(ctx context.Context, t *Tokens, margin time.Duration) (tok 
 	return t, false, nil
 }
 
-// Refresh ports refresh (563-586) and returns the new tokens without saving them. It returns
+// Refresh returns new tokens without saving them. It returns
 // ErrSessionDead only on an answer that proves the login dead (a 400 or 401 from diauth, a
 // 401 from the OAuth2 exchange, or a DI login without a refresh token); any other error means
 // the caller keeps the old tokens.
