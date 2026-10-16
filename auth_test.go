@@ -661,7 +661,7 @@ func TestSigningAndHeaders(t *testing.T) {
 			"oauth_timestamp": "1", "oauth_version": "1.0", "ticket": "ST-1",
 			"login-url": "https://sso.garmin.com/sso/embed", "accepts-mfa-tokens": "true",
 		}
-		// Computed once with the Garmin Export app's JavaScript signOAuth1, which this code was ported from.
+		// Computed once with an independent JavaScript implementation of the same OAuth1 signing.
 		if got := gconnect.SignOAuth1("GET", "https://x/oauth-service/oauth/preauthorized", params, "cs", ""); got != "vuDWLkAGwPDSl8r0q3ly059MkjE=" {
 			t.Fatalf("signature %s", got)
 		}

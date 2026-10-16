@@ -187,7 +187,7 @@ To add an endpoint, add one URL builder row to the right table in `endpoints.go`
 
 ## Credits
 
-The sign in flows follow [matin/garth](https://github.com/matin/garth) and [cyberjunky/python-garminconnect](https://github.com/cyberjunky/python-garminconnect). The library was extracted from the Garmin Export app.
+The sign in flows follow [matin/garth](https://github.com/matin/garth) and [cyberjunky/python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
 
 ## License
 

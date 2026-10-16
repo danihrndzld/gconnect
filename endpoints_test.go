@@ -6,8 +6,7 @@ import (
 	"github.com/danihrndzld/gconnect"
 )
 
-// jsURLs was built once from the endpoint table of the Garmin Export app (JavaScript), which
-// these endpoints were ported from, with the base http://127.0.0.1:1, date 2026-10-07, range
+// jsURLs was built once from an independent JavaScript endpoint table, with the base http://127.0.0.1:1, date 2026-10-07, range
 // 2026-10-01..2026-10-07, displayName dn and activityId 42.
 var jsURLs = map[string]string{
 	"stats":                      "http://127.0.0.1:1/usersummary-service/usersummary/daily/dn?calendarDate=2026-10-07",
