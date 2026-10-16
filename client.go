@@ -21,7 +21,7 @@ import (
 type Result struct {
 	Data   json.RawMessage
 	Status int
-	Code   string // "" on success; BAD_JSON, TIMEOUT, NETWORK, AUTH, FORBIDDEN, RATE_LIMIT, HTTP_4XX, HTTP_5XX
+	Code   string // "" on success; BAD_JSON, TOO_LARGE, TIMEOUT, NETWORK, AUTH, FORBIDDEN, RATE_LIMIT, HTTP_4XX, HTTP_5XX
 	Err    string // redacted; a body preview is at most 200 characters
 }
 
@@ -43,20 +43,22 @@ type StopError struct {
 func (e *StopError) Error() string { return e.Msg }
 
 // Client ports electron-app/garmin/client.js:97-420: a paced, rate limit aware GET client.
+// It is not safe for concurrent requests: an export asks one thing at a time, and Tokens,
+// the pause and the 403 streak are not guarded. Only Stopped may be called from another goroutine.
 type Client struct {
 	Auth     *Auth
 	Tokens   *Tokens
 	OnTokens func(*Tokens) error // called after every refresh; on an error the client logs SAVE_FAILED and goes on
-	Gap      time.Duration       // minimum time between requests; 0 means 500 ms
+	Gap      time.Duration       // minimum time between requests; 0 means 500 ms; a negative value disables the pause (for a loopback fake only)
 	Timeout  time.Duration       // per attempt; 0 means 30 s
 	Sleep    func(context.Context, time.Duration) error
 	Jitter   func() time.Duration         // added to the network backoff; nil means 0 to 999 ms
 	Log      func(kind, msg, code string) // "dim" lines with code "", "warn" lines with an error code
 
-	mu        sync.Mutex
 	last      time.Time
-	stop      *StopError
 	forbidden int
+	mu        sync.Mutex // guards stop
+	stop      *StopError
 }
 
 const (
@@ -65,6 +67,7 @@ const (
 	maxRateRetries   = 2                 // HTTP 429
 	maxRetryAfter    = 60 * time.Second
 	previewMaxLength = 200
+	maxBody          = 1 << 20
 )
 
 func (c *Client) log(kind, msg, code string) {
@@ -108,20 +111,12 @@ func (c *Client) throttle(ctx context.Context) error {
 	if gap == 0 {
 		gap = 500 * time.Millisecond
 	}
-	c.mu.Lock()
-	wait := time.Duration(0)
-	if !c.last.IsZero() {
-		wait = gap - time.Since(c.last)
-	}
-	c.mu.Unlock()
-	if wait > 0 {
+	if wait := gap - time.Since(c.last); gap > 0 && !c.last.IsZero() && wait > 0 {
 		if err := c.sleep(ctx, wait); err != nil {
 			return err
 		}
 	}
-	c.mu.Lock()
 	c.last = time.Now()
-	c.mu.Unlock()
 	return nil
 }
 
@@ -200,7 +195,11 @@ func (c *Client) refreshFailed(err error) Result {
 	if errors.Is(err, ErrSessionDead) || errors.Is(err, ErrNoTokens) {
 		c.stopWith(StopSessionDead, "Garmin no longer accepts the saved login. Sign in again.")
 	} else {
-		c.stopWith(StopRefreshFailed, "The Garmin token refresh failed. The saved login was kept; try again later. "+errText(err))
+		msg := errText(err)
+		if msg != "" {
+			msg = strings.ToUpper(msg[:1]) + msg[1:] + "."
+		}
+		c.stopWith(StopRefreshFailed, msg+" The saved login was kept; try again later.")
 	}
 	return Result{Code: "AUTH", Err: "Auth error: " + errText(err)}
 }
@@ -218,7 +217,7 @@ func (c *Client) setTokens(t *Tokens) {
 func (c *Client) headers(extra http.Header) http.Header {
 	h := Headers(c.Tokens)
 	for k, v := range extra {
-		h[k] = v
+		h[http.CanonicalHeaderKey(k)] = v
 	}
 	return h
 }
@@ -292,18 +291,16 @@ func (c *Client) get(ctx context.Context, name, u string, extra http.Header) Res
 		// 403: Garmin or Cloudflare refused this one request. Keep the tokens: a new sign in
 		// is the step most likely to be blocked.
 		if status == 403 {
-			c.mu.Lock()
 			c.forbidden++
-			n := c.forbidden
-			c.mu.Unlock()
-			if name == "social_profile" || n >= 5 {
-				c.stopWith(StopBlocked, fmt.Sprintf("Garmin refused %d requests in a row (HTTP 403). The saved login was kept; try again later or from another network.", n))
+			const after = " The saved login was kept; try again later or from another network."
+			if name == "social_profile" {
+				c.stopWith(StopBlocked, "Garmin refused the profile request (HTTP 403)."+after)
+			} else if c.forbidden >= 5 {
+				c.stopWith(StopBlocked, fmt.Sprintf("Garmin refused %d requests in a row (HTTP 403).", c.forbidden)+after)
 			}
 			return Result{Status: 403, Code: "FORBIDDEN", Err: "HTTP 403" + tag(name) + ": Garmin refused this request. The saved login was kept."}
 		}
-		c.mu.Lock()
 		c.forbidden = 0
-		c.mu.Unlock()
 
 		// 429: wait for Retry-After or the backoff, at most 2 times, then stop the run.
 		if status == 429 {
@@ -332,6 +329,9 @@ func (c *Client) get(ctx context.Context, name, u string, extra http.Header) Res
 		}
 
 		// 204 or an empty body: Garmin has no data yet, e.g. a day the watch has not synced.
+		if len(body) > maxBody {
+			return Result{Status: status, Code: "TOO_LARGE", Err: fmt.Sprintf("HTTP %d%s: the answer is over 1 MB, so it was not read.", status, tag(name))}
+		}
 		if strings.TrimSpace(string(body)) == "" {
 			return Result{Status: status}
 		}
@@ -342,7 +342,8 @@ func (c *Client) get(ctx context.Context, name, u string, extra http.Header) Res
 	}
 }
 
-// send makes one attempt and reads at most 1 MB of the answer.
+// send makes one attempt and reads at most 1 MB of the answer plus one byte, so the caller
+// can tell a full 1 MB answer from a longer one.
 func (c *Client) send(ctx context.Context, u string, h http.Header, timeout time.Duration) (int, http.Header, []byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -360,7 +361,7 @@ func (c *Client) send(ctx context.Context, u string, h http.Header, timeout time
 		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return 0, nil, nil, err
 	}

@@ -48,14 +48,14 @@ func (r *recorder) any(sub string) bool {
 	return false
 }
 
-// newClient wires a client to srv with tok. Gap is 1 ns: any HTTP round trip takes longer,
-// so the pause between requests never shows up in the recorded waits.
+// newClient wires a client to srv with tok. Gap -1 turns the pause off, so it never shows up
+// in the recorded waits.
 func newClient(srv *gconnecttest.Server, tok *gconnect.Tokens) (*gconnect.Client, *recorder) {
 	r := &recorder{}
 	c := &gconnect.Client{
 		Auth:   &gconnect.Auth{Hosts: srv.Hosts()},
 		Tokens: tok,
-		Gap:    time.Nanosecond,
+		Gap:    -1,
 		Sleep: func(_ context.Context, d time.Duration) error {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -252,7 +252,7 @@ func TestClientStatusRules(t *testing.T) {
 		if _, err := c.Profile(ctx); err == nil {
 			t.Fatal("Profile succeeded")
 		}
-		if c.Stopped() == nil || c.Stopped().Reason != gconnect.StopBlocked || !strings.Contains(c.Stopped().Msg, "refused") {
+		if c.Stopped() == nil || c.Stopped().Reason != gconnect.StopBlocked || !strings.HasPrefix(c.Stopped().Msg, "Garmin refused the profile request (HTTP 403).") {
 			t.Fatalf("stopped = %v", c.Stopped())
 		}
 		c.Safe(ctx, ep("hrv"), gconnect.Params{Date: day})
@@ -292,13 +292,23 @@ func TestClientHeaders(t *testing.T) {
 		srv, c, _ := signedIn(t, nil)
 		c.Get(ctx, ep("hrv"), gconnect.Params{Date: day})
 		got := srv.Calls(hrvPath)[0].Header
-		for k, v := range gconnect.Headers(c.Tokens) {
-			if got.Get(k) != v[0] {
-				t.Errorf("%s = %q, want %q", k, got.Get(k), v[0])
+		native := map[string]string{ // auth.js:71-80 NATIVE_HEADERS
+			"User-Agent":                  "GCM-Android-5.23",
+			"X-Garmin-User-Agent":         "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; Android/33; Dalvik/2.1.0",
+			"X-Garmin-Paired-App-Version": "10861",
+			"X-Garmin-Client-Platform":    "Android",
+			"X-App-Ver":                   "10861",
+			"X-Lang":                      "en",
+			"X-GCExperience":              "GC5",
+			"Accept-Language":             "en-US,en;q=0.9",
+		}
+		for k, v := range native {
+			if got.Get(k) != v {
+				t.Errorf("%s = %q, want %q", k, got.Get(k), v)
 			}
 		}
-		if got.Get("X-Garmin-Client-Platform") != "Android" {
-			t.Errorf("native headers missing: %v", got)
+		if got.Get("Authorization") != "Bearer "+c.Tokens.DI.AccessToken {
+			t.Errorf("Authorization = %q", got.Get("Authorization"))
 		}
 
 		srv, c, _ = signedIn(t, func(k *gconnecttest.Control) { k.MobileLogin = "429" })
@@ -347,12 +357,13 @@ func TestClientErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("EG-336 Gap 0 means 500 ms between requests", func(t *testing.T) {
+	t.Run("EG-336 Gap 0 means 500 ms between requests; a negative Gap means none", func(t *testing.T) {
 		_, c, r := signedIn(t, nil)
 		c.Gap = 0
 		c.Get(ctx, ep("social_profile"), gconnect.Params{})
 		c.Get(ctx, ep("social_profile"), gconnect.Params{})
-		if len(r.waits) != 1 || r.waits[0] <= 300*time.Millisecond || r.waits[0] > 500*time.Millisecond {
+		// The second request waits what is left of 500 ms; how much is left depends on the machine.
+		if len(r.waits) != 1 || r.waits[0] <= 0 || r.waits[0] > 500*time.Millisecond {
 			t.Fatalf("waits = %v", r.waits)
 		}
 	})
@@ -373,7 +384,10 @@ func TestClientErrors(t *testing.T) {
 	})
 
 	t.Run("EG-338 a network error is retried 5 times; jitter is added and the cap holds", func(t *testing.T) {
-		l, _ := net.Listen("tcp", "127.0.0.1:0")
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
 		dead := "http://" + l.Addr().String()
 		l.Close()
 		srv := fakeGarmin(t)
@@ -414,6 +428,27 @@ func TestClientErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("EG-348 an answer over 1 MB is TOO_LARGE, not BAD_JSON; exactly 1 MB is read", func(t *testing.T) {
+		srv, c, _ := signedIn(t, nil)
+		big := func(n int) []byte { return []byte(`"` + strings.Repeat("a", n-2) + `"`) }
+		srv.Handle(hrvPath, func(w http.ResponseWriter, _ *http.Request) { w.Write(big(1<<20 + 1)) })
+		if res := c.Get(ctx, ep("hrv"), gconnect.Params{Date: day}); res.Code != "TOO_LARGE" || res.Data != nil || !strings.Contains(res.Err, "over 1 MB") {
+			t.Fatalf("result = %+v", res.Err)
+		}
+		srv.Handle(hrvPath, func(w http.ResponseWriter, _ *http.Request) { w.Write(big(1 << 20)) })
+		if res := c.Get(ctx, ep("hrv"), gconnect.Params{Date: day}); res.Code != "" || len(res.Data) != 1<<20 {
+			t.Fatalf("1 MB answer: %q, %d bytes", res.Code, len(res.Data))
+		}
+	})
+
+	t.Run("CL-358 GetURL extra headers replace the defaults whatever their case", func(t *testing.T) {
+		srv, c, _ := signedIn(t, nil)
+		c.GetURL(ctx, srv.URL()+hrvPath, http.Header{"user-agent": {"mine"}})
+		if ua := srv.Calls(hrvPath)[0].Header.Values("User-Agent"); !slices.Equal(ua, []string{"mine"}) {
+			t.Fatalf("User-Agent = %q", ua)
+		}
+	})
+
 	t.Run("CL-338 Profile returns the display name", func(t *testing.T) {
 		_, c, _ := signedIn(t, nil)
 		if dn, err := c.Profile(ctx); err != nil || dn != "displayName-redacted" {
@@ -438,6 +473,9 @@ func TestClientRefresh(t *testing.T) {
 		res := c.Get(ctx, ep("hrv"), gconnect.Params{Date: day})
 		if res.Code != "AUTH" || c.Stopped() == nil || c.Stopped().Reason != gconnect.StopRefreshFailed {
 			t.Fatalf("result %+v, stopped %v", res, c.Stopped())
+		}
+		if strings.Count(strings.ToLower(c.Stopped().Msg), "refresh failed") != 1 {
+			t.Errorf("message = %q", c.Stopped().Msg)
 		}
 		if c.Tokens != tok || c.Tokens.DI.AccessToken != "old" || len(r.saved) != 0 || len(srv.Calls(hrvPath)) != 0 {
 			t.Fatal("the tokens changed or a data request went out")
