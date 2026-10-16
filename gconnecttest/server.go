@@ -61,15 +61,23 @@ func (s *Server) URL() string           { return s.srv.URL }
 func (s *Server) Hosts() gconnect.Hosts { return gconnect.SameHost(s.srv.URL) }
 func (s *Server) Close()                { s.srv.Close() }
 
-// Handle serves a connectapi data route at exactly path. The fake still answers 401 to a
-// token it did not issue, and DataStatus and FailOnce still apply.
+// Handle serves a connectapi data route at exactly path, or, when path ends in "/", at every
+// path under it (as in http.ServeMux; the longest match wins). The fake still answers 401 to
+// a token it did not issue, and DataStatus and FailOnce still apply.
 func (s *Server) Handle(path string, h http.HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.routes[path] = h
 }
 
-// Control returns the knobs. Change them between requests, never during one.
+// Set changes the knobs under the lock, so it is safe while requests are in flight.
+func (s *Server) Set(f func(*Control)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f(&s.control)
+}
+
+// Control returns the knobs. Change them between requests, never during one; use Set otherwise.
 func (s *Server) Control() *Control {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -234,11 +242,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	// connectapi data endpoints
 	s.mu.Lock()
 	ok := s.valid[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
-	once := 0
+	once, always := 0, 0
 	for prefix, status := range s.control.FailOnce {
 		if ok && strings.HasPrefix(p, prefix) {
 			delete(s.control.FailOnce, prefix)
 			once = status
+			break
+		}
+	}
+	for prefix, status := range s.control.DataStatus {
+		if strings.HasPrefix(p, prefix) {
+			always = status
 			break
 		}
 	}
@@ -257,14 +271,20 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		send(w, once, obj{"message": "forced once"}, retry(once)...)
 		return
 	}
-	for prefix, status := range c.DataStatus {
-		if strings.HasPrefix(p, prefix) {
-			send(w, status, obj{"message": "forced"}, retry(status)...)
-			return
-		}
+	if always != 0 {
+		send(w, always, obj{"message": "forced"}, retry(always)...)
+		return
 	}
 	s.mu.Lock()
 	h := s.routes[p]
+	if h == nil {
+		best := ""
+		for prefix, rh := range s.routes {
+			if strings.HasSuffix(prefix, "/") && strings.HasPrefix(p, prefix) && len(prefix) > len(best) {
+				best, h = prefix, rh
+			}
+		}
+	}
 	s.mu.Unlock()
 	if h != nil {
 		h(w, r)

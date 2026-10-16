@@ -4,4 +4,5 @@ package gconnect
 var (
 	JWTClaims  = jwtClaims
 	SignOAuth1 = signOAuth1
+	RetryAfter = retryAfter
 )
