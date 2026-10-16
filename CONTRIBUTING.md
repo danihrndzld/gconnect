@@ -19,7 +19,7 @@ go test -race -count=1 ./...
 go test -cover -coverpkg=./... -coverprofile=cover.out ./... && go tool cover -func=cover.out | tail -1
 ```
 
-Statement coverage must stay at or above 95 %. Today it is 99.9 %.
+Statement coverage must stay at or above 95 %. Today it is 99.8 %.
 
 ## Rules the tests enforce
 
