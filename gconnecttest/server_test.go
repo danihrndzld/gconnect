@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect"
-	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect/gconnecttest"
+	"github.com/danihrndzld/gconnect"
+	"github.com/danihrndzld/gconnect/gconnecttest"
 )
 
 // signedIn starts a fake and returns it with an access token it issued.
@@ -42,7 +42,7 @@ func get(t *testing.T, srv *gconnecttest.Server, path, access string) (int, stri
 
 func TestControl(t *testing.T) {
 	t.Parallel()
-	t.Run("CL-481 New starts with the documented default knobs", func(t *testing.T) {
+	t.Run("CL-481 a new fake: the documented default knobs", func(t *testing.T) {
 		t.Parallel()
 		srv := gconnecttest.New()
 		defer srv.Close()
@@ -66,7 +66,7 @@ func TestControl(t *testing.T) {
 			t.Fatalf("status %d, want 404 (no route, no forced status)", status)
 		}
 	})
-	t.Run("CL-483 Reset restores the knobs and clears the calls; issued tokens stay valid", func(t *testing.T) {
+	t.Run("CL-483 Reset after changes: default knobs, no calls, issued tokens still valid", func(t *testing.T) {
 		t.Parallel()
 		srv, access := signedIn(t)
 		srv.Set(func(c *gconnecttest.Control) { c.DataStatus["/"] = 500; c.Password = "x" })
@@ -129,7 +129,7 @@ func TestPrefixMatching(t *testing.T) {
 			}
 		}
 	})
-	t.Run("EP-483 FailOnce is not used up by a request with a token the fake did not issue", func(t *testing.T) {
+	t.Run("EP-483 FailOnce and a token the fake did not issue: 401, and FailOnce is not used up", func(t *testing.T) {
 		t.Parallel()
 		srv, access := signedIn(t)
 		srv.Set(func(c *gconnecttest.Control) { c.FailOnce["/hrv-service/"] = 500 })
@@ -205,7 +205,23 @@ func TestHandle(t *testing.T) {
 			t.Fatalf("forced status answered %d", s)
 		}
 	})
-	t.Run("CL-484 without a route the social profile answers a default display name", func(t *testing.T) {
+	t.Run("DT-R483 diauth: a refresh token the fake did not issue or a ticket without ST-: 400 invalid_grant", func(t *testing.T) {
+		t.Parallel()
+		srv := gconnecttest.New()
+		defer srv.Close()
+		for _, form := range []string{"grant_type=refresh_token&refresh_token=other", "grant_type=x&service_ticket=TICKET"} {
+			resp, err := http.Post(srv.URL()+"/di-oauth2-service/oauth/token", "application/x-www-form-urlencoded", strings.NewReader(form))
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != 400 || !strings.Contains(string(b), "invalid_grant") {
+				t.Fatalf("%s: %d %s", form, resp.StatusCode, b)
+			}
+		}
+	})
+	t.Run("CL-484 the social profile without a route: a default display name", func(t *testing.T) {
 		t.Parallel()
 		srv, access := signedIn(t)
 		status, body := get(t, srv, "/userprofile-service/socialProfile", access)
@@ -217,7 +233,7 @@ func TestHandle(t *testing.T) {
 
 func TestCallsAndHelpers(t *testing.T) {
 	t.Parallel()
-	t.Run("CL-485 Calls records method, path, query, headers and body, filtered by path", func(t *testing.T) {
+	t.Run("CL-485 two requests and a sign in: Calls records method, path, query, headers and body, filtered by path", func(t *testing.T) {
 		t.Parallel()
 		srv, access := signedIn(t)
 		srv.Reset()
@@ -241,7 +257,7 @@ func TestCallsAndHelpers(t *testing.T) {
 			t.Fatalf("the login body was not recorded")
 		}
 	})
-	t.Run("CL-486 JWT builds header.payload.sig with the claims as base64url JSON", func(t *testing.T) {
+	t.Run("CL-486 JWT of a claims map: header.payload.sig with the claims as base64url JSON", func(t *testing.T) {
 		t.Parallel()
 		parts := strings.Split(gconnecttest.JWT(map[string]any{"exp": 5, "client_id": "X"}), ".")
 		if len(parts) != 3 || parts[2] != "sig" {
@@ -256,7 +272,7 @@ func TestCallsAndHelpers(t *testing.T) {
 			t.Fatalf("payload %s: %v", b, err)
 		}
 	})
-	t.Run("CL-487 Hosts points all four hosts at URL", func(t *testing.T) {
+	t.Run("CL-487 Hosts of a fake: all four hosts are its URL", func(t *testing.T) {
 		t.Parallel()
 		srv := gconnecttest.New()
 		defer srv.Close()
@@ -264,7 +280,7 @@ func TestCallsAndHelpers(t *testing.T) {
 			t.Fatalf("hosts = %+v", h)
 		}
 	})
-	t.Run("EG-481 Set, Control, Handle and Calls run while requests are in flight without a data race", func(t *testing.T) {
+	t.Run("EG-481 Set, Control, Handle and Calls while requests are in flight: no data race", func(t *testing.T) {
 		t.Parallel()
 		srv, access := signedIn(t)
 		var wg sync.WaitGroup
@@ -289,7 +305,7 @@ func TestCallsAndHelpers(t *testing.T) {
 		}
 		wg.Wait()
 	})
-	t.Run("EG-482 the test guard refuses an address that is not loopback before any packet leaves", func(t *testing.T) {
+	t.Run("EG-482 a request to 192.0.2.1 in a test: the guard refuses it before any packet leaves", func(t *testing.T) {
 		t.Parallel()
 		_, err := http.Get("http://192.0.2.1/") // TEST-NET-1, RFC 5737
 		if err == nil || !strings.Contains(err.Error(), "test guard") {

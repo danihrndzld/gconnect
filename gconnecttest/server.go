@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect"
+	"github.com/danihrndzld/gconnect"
 )
 
 // Control holds the knobs that pick how the fake answers. The zero value of each field is

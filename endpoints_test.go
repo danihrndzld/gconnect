@@ -3,7 +3,7 @@ package gconnect_test
 import (
 	"testing"
 
-	"github.com/danihrndzld/garmin-health-exporter/tauri-app/core/gconnect"
+	"github.com/danihrndzld/gconnect"
 )
 
 // jsURLs was built once from the endpoint table of the Garmin Export app (JavaScript), which
@@ -51,8 +51,10 @@ var jsURLs = map[string]string{
 }
 
 func TestEndpointTable(t *testing.T) {
+	t.Parallel()
 	p := gconnect.Params{Date: "2026-10-07", Start: "2026-10-01", End: "2026-10-07", DisplayName: "dn", ActivityID: "42"}
-	t.Run("CL-331 every endpoint builds the URL the JavaScript table builds", func(t *testing.T) {
+	t.Run("CL-431 every endpoint with fixed params: the URL the JavaScript table builds, 38 rows", func(t *testing.T) {
+		t.Parallel()
 		seen := map[string]bool{}
 		for _, list := range [][]gconnect.Endpoint{gconnect.Daily(), gconnect.Aggregated(), gconnect.Activity(), gconnect.List()} {
 			for _, ep := range list {
@@ -69,7 +71,8 @@ func TestEndpointTable(t *testing.T) {
 			t.Errorf("%d endpoints, want %d", len(seen), len(jsURLs))
 		}
 	})
-	t.Run("CL-332 the 3 duplicate URLs carry AliasOf, and goals carries Sec-Fetch-Site", func(t *testing.T) {
+	t.Run("CL-432 the 3 duplicate URLs and goals: AliasOf names the original, goals carries Sec-Fetch-Site", func(t *testing.T) {
+		t.Parallel()
 		for name, of := range map[string]string{"user_summary": "stats", "all_day_stress": "stress", "morning_training_readiness": "training_readiness"} {
 			if ep, _ := gconnect.Lookup(name); ep.AliasOf != of {
 				t.Errorf("%s.AliasOf = %q, want %q", name, ep.AliasOf, of)
@@ -79,7 +82,8 @@ func TestEndpointTable(t *testing.T) {
 			t.Errorf("goals header = %v", ep.Header)
 		}
 	})
-	t.Run("CL-333 Lookup finds each type and refuses an unknown name", func(t *testing.T) {
+	t.Run("CL-433 Lookup of one name per type and of unknown names: the type, or not found", func(t *testing.T) {
+		t.Parallel()
 		for name, typ := range map[string]string{"hrv": "daily", "hill_score": "aggregated", "activity_splits": "activity", "goals": "list"} {
 			if ep, ok := gconnect.Lookup(name); !ok || ep.Type != typ {
 				t.Errorf("Lookup(%s) = %q %v", name, ep.Type, ok)
@@ -91,11 +95,58 @@ func TestEndpointTable(t *testing.T) {
 			}
 		}
 	})
-	t.Run("CL-334 activities_by_date pages with Offset and Limit", func(t *testing.T) {
-		ep, _ := gconnect.Lookup("activities_by_date")
-		got := ep.URL("http://x", gconnect.Params{Start: "2026-10-01", End: "2026-10-07", Offset: 40, Limit: 20})
-		if want := "http://x/activitylist-service/activities/search/activities?startDate=2026-10-01&endDate=2026-10-07&start=40&limit=20"; got != want {
-			t.Errorf("got %s", got)
+	for _, c := range []struct {
+		id            string
+		offset, limit int
+		want          string
+	}{
+		{"BVA-446 activities_by_date with Limit 0: limit=20, the documented default", 0, 0, "start=0&limit=20"},
+		{"BVA-447 activities_by_date with Limit 1: limit=1", 0, 1, "start=0&limit=1"},
+		{"CL-434 activities_by_date with Offset 40 and Limit 20: start=40&limit=20", 40, 20, "start=40&limit=20"},
+	} {
+		t.Run(c.id, func(t *testing.T) {
+			t.Parallel()
+			ep, _ := gconnect.Lookup("activities_by_date")
+			got := ep.URL("http://x", gconnect.Params{Start: "2026-10-01", End: "2026-10-07", Offset: c.offset, Limit: c.limit})
+			if want := "http://x/activitylist-service/activities/search/activities?startDate=2026-10-01&endDate=2026-10-07&" + c.want; got != want {
+				t.Errorf("got %s", got)
+			}
+		})
+	}
+	t.Run("CL-466 Daily, Aggregated, Activity and List: 22, 12, 1 and 3 endpoints, each of its own type", func(t *testing.T) {
+		t.Parallel()
+		for _, c := range []struct {
+			list []gconnect.Endpoint
+			typ  string
+			n    int
+		}{{gconnect.Daily(), "daily", 22}, {gconnect.Aggregated(), "aggregated", 12}, {gconnect.Activity(), "activity", 1}, {gconnect.List(), "list", 3}} {
+			if len(c.list) != c.n {
+				t.Errorf("%s: %d endpoints, want %d", c.typ, len(c.list), c.n)
+			}
+			for _, ep := range c.list {
+				if ep.Type != c.typ {
+					t.Errorf("%s has type %q, want %q", ep.Name, ep.Type, c.typ)
+				}
+			}
+		}
+	})
+	t.Run("CL-467 changing what Daily, List and Lookup return: the next call is unchanged", func(t *testing.T) {
+		t.Parallel()
+		d := gconnect.Daily()
+		d[0].Name = "changed"
+		l := gconnect.List()
+		for i := range l {
+			if l[i].Header != nil {
+				l[i].Header.Set("Sec-Fetch-Site", "cross-site")
+			}
+		}
+		g, _ := gconnect.Lookup("goals")
+		g.Header.Set("X-Extra", "1")
+		if gconnect.Daily()[0].Name != "stats" {
+			t.Error("Daily shares its slice")
+		}
+		if g2, _ := gconnect.Lookup("goals"); g2.Header.Get("Sec-Fetch-Site") != "same-origin" || g2.Header.Get("X-Extra") != "" || len(g2.Header) != 1 {
+			t.Errorf("goals header = %v", g2.Header)
 		}
 	})
 }

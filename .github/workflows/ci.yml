@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        go: ["1.24.x", stable]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "These files need gofmt:"; echo "$out"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race -count=1 -cover -coverpkg=./... -coverprofile=cover.out ./...
+      - name: coverage gate (95% of statements)
+        run: |
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {sub("%", "", $3); print $3}')
+          echo "statement coverage: $total%"
+          awk -v t="$total" 'BEGIN { exit (t < 95) }'

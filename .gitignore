@@ -1,0 +1,4 @@
+reportes-pruebas/
+*.out
+.coverage
+coverage.json
