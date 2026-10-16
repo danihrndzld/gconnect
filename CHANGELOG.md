@@ -4,8 +4,11 @@ All notable changes to this module. The format follows [Keep a Changelog](https:
 
 ## Unreleased
 
+## v0.1.2 (2026-10-16)
+
 ### Added
 
+- `IsSecretKey`, the key test that `Redact` and `RedactURL` use, exported so callers can scrub their own key and value pairs.
 - `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and a pull request template.
 - `scripts/report/`, which rebuilds the PDF test report.
 - `ids_test.go`, which fails when two tests share a technique ID.

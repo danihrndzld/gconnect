@@ -12,7 +12,10 @@ var (
 	secretSubstrings = []string{"auth", "secret", "password", "passwd", "pwd"}
 )
 
-func isSecretKey(key string) bool {
+// IsSecretKey reports whether a query or JSON key holds a secret: an exact name such as token,
+// code or jwt, or a name containing auth, secret, password, passwd or pwd. Case does not
+// matter. Redact and RedactURL use it; callers can use it to scrub their own key and value pairs.
+func IsSecretKey(key string) bool {
 	k := strings.ToLower(key)
 	if slices.Contains(secretQueryKeys, k) {
 		return true
@@ -39,7 +42,7 @@ var (
 func redactParams(re *regexp.Regexp, s string) string {
 	return re.ReplaceAllStringFunc(s, func(m string) string {
 		g := re.FindStringSubmatch(m)
-		if isSecretKey(g[2]) {
+		if IsSecretKey(g[2]) {
 			return g[1] + g[2] + "=REDACTED"
 		}
 		return m
@@ -57,7 +60,7 @@ func Redact(s string) string {
 	s = cookieRE.ReplaceAllString(s, "${1}REDACTED")
 	s = jwtRE.ReplaceAllString(s, "REDACTED_JWT")
 	s = jsonPairRE.ReplaceAllStringFunc(s, func(m string) string {
-		if key := jsonPairRE.FindStringSubmatch(m)[1]; isSecretKey(key) {
+		if key := jsonPairRE.FindStringSubmatch(m)[1]; IsSecretKey(key) {
 			return `"` + key + `":"REDACTED"`
 		}
 		return m

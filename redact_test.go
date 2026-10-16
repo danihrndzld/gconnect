@@ -73,3 +73,27 @@ func TestRedact(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSecretKey(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, key string
+		want      bool
+	}{
+		{"EP-485 an exact secret name is secret", "token", true},
+		{"EP-486 case does not matter", "Access_Token", true},
+		{"EP-487 a name containing secret is secret", "clientSecret", true},
+		{"EP-488 a name containing auth is secret", "X-Auth-Token", true},
+		{"EP-489 jwt is secret", "jwt", true},
+		{"EP-490 code is secret", "code", true},
+		{"EP-491 an ordinary name is not secret", "username", false},
+		{"EP-492 a date key is not secret", "date", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := gconnect.IsSecretKey(c.key); got != c.want {
+				t.Errorf("IsSecretKey(%q) = %v, want %v", c.key, got, c.want)
+			}
+		})
+	}
+}
