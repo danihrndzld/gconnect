@@ -2,7 +2,7 @@
 
 # gconnect
 
-**Sign in to Garmin Connect from Go, keep the login fresh, and fetch your health data as raw JSON.**
+**Sign in to Garmin Connect from Go, or use an official Personal API key, keep the login fresh, and fetch your health data as raw JSON.**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/danihrndzld/gconnect.svg)](https://pkg.go.dev/github.com/danihrndzld/gconnect)
 [![CI](https://github.com/danihrndzld/gconnect/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/danihrndzld/gconnect/actions/workflows/ci.yml)
@@ -15,7 +15,7 @@
 </div>
 
 > [!WARNING]
-> gconnect is an unofficial Go client for the private Garmin Connect API. It is not affiliated with, endorsed by, or supported by Garmin Ltd. Garmin and Garmin Connect are trademarks of Garmin Ltd. or its subsidiaries. The sign in flows were last checked against the live service on 2026-10-14. Garmin can change or block this private API at any time, and this library may stop working without notice.
+> gconnect is an unofficial Go client. Its sign in uses the private Garmin Connect API, and only the Personal API key uses an API that Garmin documents. It is not affiliated with, endorsed by, or supported by Garmin Ltd. Garmin and Garmin Connect are trademarks of Garmin Ltd. or its subsidiaries. The sign in flows were last checked against the live service on 2026-10-14. Garmin can change or block this private API at any time, and this library may stop working without notice.
 
 ## Why gconnect
 
@@ -33,6 +33,7 @@
 - [Sign in](#sign-in)
 - [Tokens and refresh](#tokens-and-refresh)
 - [Personal API key](#personal-api-key)
+  - [Personal API key compared with the sign in](#personal-api-key-compared-with-the-sign-in)
 - [Rate limits](#rate-limits)
 - [Results and stop reasons](#results-and-stop-reasons)
 - [Endpoints](#endpoints)
@@ -59,7 +60,7 @@ gconnect needs Go 1.24 or newer.
 | Token refresh | Supported for both kinds of login. |
 | Two step verification (MFA) | Not supported. `Login` returns the code `MFARequired`. |
 | Endpoints | 43 named endpoints: daily metrics, date ranges, activity splits, activity lists, goals, the profile, and 5 Personal API paths. |
-| Personal API | `Auth.ExchangeAPIKey` trades a key from Garmin's Personal API page for a 24 hour access token; `Client` then reads from `personal.connectapi.garmin.com`. |
+| Personal API key | Supported. `Auth.ExchangeAPIKey` trades the key for a 24 hour access token, and `Client` then reads from `personal.connectapi.garmin.com`. The key reads less data than the sign in, as the [comparison](#personal-api-key-compared-with-the-sign-in) shows. |
 
 ## Quick start
 
@@ -156,27 +157,48 @@ Every failure is a `*gconnect.LoginError`. Its `Msg` never contains the password
 
 ## Personal API key
 
-Since October 2026 Garmin offers an official, read only Personal API. A user creates a key at <https://connect.garmin.com/app/settings/personalApiToken> (it lives 30, 90, 180 or 365 days and Garmin shows it once). No password, MFA or SSO rate limit is involved.
+Garmin started offering an official Personal API in October 2026. You create a key at <https://connect.garmin.com/app/settings/personalApiToken>, choose how long it lasts (30, 90, 180 or 365 days), and copy it, because Garmin shows it only once. The key is read only, and using it needs no password, so two step verification and the sign in rate limit don't apply.
 
 ```go
 a := &gconnect.Auth{}
-tok, err := a.ExchangeAPIKey(ctx, key) // one POST; save tok as you save any login
+tok, err := a.ExchangeAPIKey(ctx, key) // one POST, save tok the same way you save a login
 c := &gconnect.Client{Auth: a, Tokens: tok, OnTokens: save}
 ep, _ := gconnect.Lookup("personal_daily_summaries")
 r := c.Get(ctx, ep, gconnect.Params{Start: "2026-10-01", End: "2026-10-20"})
 ```
 
-`Tokens.Personal` holds the key and the current access token, and `Kind` answers `KindPersonal`. Each access token lives 24 hours and has no refresh token, so `Refresh` buys the next one with the key. A 400 or 401 on that request means Garmin refused the key (wrong, expired or deleted) and returns `ErrSessionDead`; a 429, a 5xx or a network error is a plain error.
+`ExchangeAPIKey` trades the key for an access token that lasts 24 hours, and `Tokens.Personal` keeps the key and the current token, so `Kind` returns `KindPersonal`. Garmin gives no refresh token with the key, so `Refresh` asks for a new access token with the key again. If Garmin answers 400 or 401 to that request, the key is wrong, expired or deleted, and `Refresh` returns `ErrSessionDead`. A 429, a 5xx or a network error returns a plain error, and the saved key stays valid.
 
-The Personal API host answers only its documented paths and 404 to the rest. On 2026-10-24 it answered these names from the table: `hrv`, `body_battery`, `daily_steps`, `agg_weigh_ins` and `activities_by_date`, plus the five `PersonalRanges()` endpoints below. Training readiness, training status, VO2 max, endurance and hill scores, race predictions, activity splits, goals, blood pressure and the social profile answered 404, so a caller that needs them still needs a sign in.
+### Personal API key compared with the sign in
+
+The Personal API and the sign in reach different servers. With the key, `Client` sends every request to `personal.connectapi.garmin.com`, and that server answers only the paths Garmin documents. It answers 404 to every other path, including most of the paths the sign in can read on `connectapi.garmin.com`. The table below shows what each one could read when both were tested on 2026-10-24.
+
+| | Personal API key | Sign in (email and password) |
+| --- | --- | --- |
+| Official | Yes, Garmin documents it and supports it. | No, it is the private API of Garmin's phone app, found by reverse engineering. |
+| Password and MFA | Not needed. Accounts with two step verification work. | The password is sent once. Accounts with two step verification can't sign in. |
+| Rate limit on getting access | None found. | About 4 sign ins in 40 minutes, then a 429 that also locks the official app for a while. |
+| How long access lasts | Until the key expires, after 30 to 365 days. You then create a new key by hand. | Until Garmin ends the login. The refresh token usually keeps it going for months. |
+| Requests | One request covers a date range, up to 90 days for the daily summary and HRV, 31 for sleep and Body Battery, and 28 for steps. | Most data needs one request per day and per kind of data. |
+| Daily summary, sleep, HRV, Body Battery, pulse ox, respiration | Yes, through the five `personal_*` endpoints. A few fields are missing, e.g., the seven day average resting heart rate and some sleep fields. | Yes, every field. |
+| Activities, steps, weight, fitness age | Yes: `activities_by_date` (at most 20 per page), `daily_steps`, `agg_weigh_ins` and `personal_fitness_age`. | Yes. |
+| Training readiness, training status, VO2 max, endurance score, hill score, race predictions | No, 404. | Yes. |
+| Activity splits (laps), goals, blood pressure, body composition, the profile | No, 404. | Yes. |
+| Display name | Not needed, and `Client.Profile` fails, because `social_profile` answers 404. | Needed for six daily endpoints, and `Client.Profile` returns it. |
+
+So the key alone is enough for daily health data and the activity list. A program that also needs training metrics or laps has to keep a sign in too. It can still use the key for the data the key covers, which cuts the number of requests sent with the sign in. The Garmin Export app does it that way.
+
+These are the five endpoints that only work with the key:
 
 | Name | Range limit | Answer |
 | --- | --- | --- |
-| `personal_daily_summaries` | 90 days | `{"data": [...]}`: steps, floors, calories, heart rate, stress, intensity minutes, Body Battery, respiration and pulse ox per day |
-| `personal_sleep` | 31 days | `[...]` of `dailySleepDTO` shaped rows |
-| `personal_hrv` | 90 days | `{"hrvSummaries": [...]}` of `hrvSummary` shaped rows |
-| `personal_fitness_age` | one day (`End`) | fitness age, chronological age and its components |
-| `personal_body_battery` | 31 days | `[...]` of the rows `body_battery` answers for one day |
+| `personal_daily_summaries` | 90 days | `{"data": [...]}` with steps, floors, calories, heart rate, stress, intensity minutes, Body Battery, respiration and pulse ox per day |
+| `personal_sleep` | 31 days | `[...]` of rows shaped like `dailySleepDTO` |
+| `personal_hrv` | 90 days | `{"hrvSummaries": [...]}` of rows shaped like `hrvSummary` |
+| `personal_fitness_age` | one day (`End`) | fitness age, chronological age and the parts of the score |
+| `personal_body_battery` | 31 days | `[...]` of the rows that `body_battery` returns for one day |
+
+A longer range gets a 400 from Garmin, so split long ranges yourself. Garmin can add paths to the Personal API later, and the table above lists only what answered on 2026-10-24.
 
 ## Rate limits
 
@@ -284,7 +306,7 @@ Report a security problem as described in [SECURITY.md](SECURITY.md).
 
 ## Legal and ethics
 
-The Garmin Connect API used here is private and was reverse engineered. Garmin can change or block it at any time. You are responsible for following Garmin's terms of use for your account. Use the library for your own data, keep the request rate low, and do not sign in more often than you need to: a rate limited sign in also locks you out of the official app for a while.
+The Garmin Connect API that the sign in uses is private and was reverse engineered, and Garmin can change or block it at any time. The Personal API is official, and its use falls under Garmin's Personal API terms, which you accept when you create the key. You are responsible for following Garmin's terms of use for your account. Use the library for your own data, keep the request rate low, and do not sign in more often than you need to: a rate limited sign in also locks you out of the official app for a while.
 
 The older sign in flow downloads its OAuth consumer key from `thegarth.s3.amazonaws.com`, a bucket run by the garth project, not by this library. Set `Hosts.Consumer` to your own copy if you do not want that run time dependency.
 
