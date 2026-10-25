@@ -4,6 +4,12 @@ All notable changes to this module. The format follows [Keep a Changelog](https:
 
 ## Unreleased
 
+## v0.2.1 (2026-10-24)
+
+### Fixed
+
+- `ExchangeAPIKey` sends `Accept: */*`. The real token service answers 406 to `Accept: application/json`, because the token comes back as text. The fake now answers 406 the same way.
+
 ## v0.2.0 (2026-10-24)
 
 ### Added

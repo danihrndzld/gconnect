@@ -642,7 +642,7 @@ func (a *Auth) ExchangeAPIKey(ctx context.Context, key string) (*Tokens, error) 
 		return nil, err
 	}
 	req.Header.Set("Authorization", "ApiKey "+key)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "*/*") // the answer is text; Accept: application/json gets 406 (measured 2026-10-24)
 	status, body, err := do(a.client(), req)
 	switch {
 	case err != nil:

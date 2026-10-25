@@ -252,6 +252,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case c.APIKeyStatus != 0:
 			send(w, c.APIKeyStatus, obj{"error": "forced"})
+		case r.Header.Get("Accept") == "application/json": // the token is text, as on the real service
+			send(w, 406, obj{"error": "NotAcceptableException"})
 		case r.Header.Get("Authorization") == "":
 			send(w, 400, obj{"error": "Authentication missing", "status": 400})
 		case r.Header.Get("Authorization") != "ApiKey "+c.APIKey:

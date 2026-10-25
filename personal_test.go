@@ -70,6 +70,16 @@ func TestExchangeAPIKey(t *testing.T) {
 			t.Fatalf("got %+v, %v", tok, err)
 		}
 	})
+	t.Run("EG-488 the token request: it accepts any answer type, since Garmin answers 406 to Accept: application/json", func(t *testing.T) {
+		t.Parallel()
+		srv := fakeGarmin(t)
+
+		_, err := (&gconnect.Auth{Hosts: srv.Hosts()}).ExchangeAPIKey(context.Background(), apiKey)
+
+		if got := srv.Calls(gconnect.PersonalTokenPath)[0].Header.Get("Accept"); err != nil || got != "*/*" {
+			t.Fatalf("Accept %q, err %v", got, err)
+		}
+	})
 	t.Run("EP-495 an empty key: ErrSessionDead and nothing sent", func(t *testing.T) {
 		t.Parallel()
 		srv := fakeGarmin(t)
