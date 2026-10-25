@@ -1,6 +1,7 @@
 // Package gconnecttest is a fake Garmin for tests: SSO (widget and mobile login), diauth,
-// the OAuth consumer file, the oauth-service OAuth1 to OAuth2 exchange and connectapi, all
-// on one httptest server. Point a gconnect.Auth at it with Hosts(). It issues synthetic
+// the OAuth consumer file, the oauth-service OAuth1 to OAuth2 exchange, connectapi and the
+// Personal API (key to token exchange, and data on the paths Garmin allows), all on one
+// httptest server. Point a gconnect.Auth at it with Hosts(). It issues synthetic
 // tokens only, and connectapi accepts only the tokens it issued.
 package gconnecttest
 
@@ -30,6 +31,8 @@ type Control struct {
 	TokenTTL     int    // seconds, default 3600
 	Widget429    bool
 	WidgetStatus int
+	APIKey       string         // the Personal API key the fake accepts, default "right-api-key"
+	APIKeyStatus int            // when not 0, the Personal API token request answers this status
 	DataStatus   map[string]int // path prefix -> status, every time; the longest matching prefix wins
 	FailOnce     map[string]int // path prefix -> status, once; the longest matching prefix wins
 }
@@ -48,17 +51,18 @@ type Server struct {
 	calls   []Call
 	issued  int
 	valid   map[string]bool
+	persona map[string]bool // access tokens bought with an API key: data only on personalPaths
 	routes  map[string]http.HandlerFunc
 	srv     *httptest.Server
 }
 
 func defaults() Control {
-	return Control{Password: "right-password", MobileLogin: "ok", DIAuth: "ok", TokenTTL: 3600, DataStatus: map[string]int{}, FailOnce: map[string]int{}}
+	return Control{Password: "right-password", APIKey: "right-api-key", MobileLogin: "ok", DIAuth: "ok", TokenTTL: 3600, DataStatus: map[string]int{}, FailOnce: map[string]int{}}
 }
 
 // New starts a fake with the default knobs. Close it when the test ends.
 func New() *Server {
-	s := &Server{control: defaults(), valid: map[string]bool{}, routes: map[string]http.HandlerFunc{}}
+	s := &Server{control: defaults(), valid: map[string]bool{}, persona: map[string]bool{}, routes: map[string]http.HandlerFunc{}}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
 }
@@ -163,6 +167,35 @@ func (s *Server) newDIToken(ttl int) obj {
 	return obj{"access_token": access, "token_type": "bearer", "refresh_token": fmt.Sprintf("refresh-%d", s.issued), "expires_in": ttl, "refresh_token_expires_in": 2592000, "scope": "x", "jti": fmt.Sprint(s.issued)}
 }
 
+// personalPaths are the path prefixes the real Personal API answered on 2026-10-24 (its
+// documented endpoints). A Personal API token gets 404 anywhere else, as from Garmin.
+var personalPaths = []string{
+	"/usersummary-service/stats/stress/daily/", "/usersummary-service/stats/steps/daily/",
+	"/usersummary-service/stats/hydration/daily/", "/usersummary-service/v2/dailysummaries",
+	"/goal-service/goal/user/effective/weightgoal/", "/weight-service/weight/range/",
+	"/nutrition-service/food/logs/", "/userprofile-service/userprofile/settings",
+	"/sleep-service/sleep/dailySleep", "/wellness-service/wellness/bodyBattery/reports/daily",
+	"/hrv-service/hrv/", "/biometric-service/heartRateZones/v2", "/fitnessage-service/fitnessage/v2/",
+	"/periodichealth-service/menstrualcycle/",
+	"/wellness-service/wellness/daily/spo2acclimation/", "/wellnessactivity-service/activity/summary/range/",
+	"/activitylist-service/activities/search/activities", "/download-service/files/activity/",
+}
+
+func personalAllows(p string) bool {
+	if strings.HasPrefix(p, "/activity-service/activity/") { // the activity and its workouts, not its splits
+		return !strings.HasSuffix(p, "/splits")
+	}
+	if p == "/wellness-service/wellness/dailyHeartRate" { // only without the display name segment
+		return true
+	}
+	for _, prefix := range personalPaths {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // serve answers one request.
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
@@ -215,6 +248,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 
+	case p == gconnect.PersonalTokenPath && r.Method == "POST":
+		switch {
+		case c.APIKeyStatus != 0:
+			send(w, c.APIKeyStatus, obj{"error": "forced"})
+		case r.Header.Get("Authorization") == "":
+			send(w, 400, obj{"error": "Authentication missing", "status": 400})
+		case r.Header.Get("Authorization") != "ApiKey "+c.APIKey:
+			send(w, 401, nil)
+		default:
+			s.mu.Lock()
+			s.issued++
+			access := JWT(obj{"client_id": "personal-api", "exp": time.Now().Unix() + int64(c.TokenTTL), "n": s.issued})
+			s.valid[access], s.persona[access] = true, true
+			s.mu.Unlock()
+			w.Header().Set("Content-Type", "text/plain")
+			io.WriteString(w, access) // Garmin answers with the bare JWT, not JSON
+		}
+		return
+
 	case p == "/oauth_consumer.json":
 		send(w, 200, obj{"consumer_key": "ck", "consumer_secret": "cs"})
 		return
@@ -255,7 +307,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 	// connectapi data endpoints
 	s.mu.Lock()
-	ok := s.valid[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	access := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	ok := s.valid[access]
+	blocked := s.persona[access] && !personalAllows(p)
 	once, always := 0, 0
 	if prefix, ok2 := longest(s.control.FailOnce, p); ok && ok2 {
 		once = s.control.FailOnce[prefix]
@@ -274,6 +328,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !ok:
 		send(w, 401, obj{"message": "token not active"})
+		return
+	case blocked:
+		send(w, 404, obj{"message": "Not Found"})
 		return
 	case once != 0:
 		send(w, once, obj{"message": "forced once"}, retry(once)...)

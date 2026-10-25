@@ -15,7 +15,7 @@ type Params struct {
 // Endpoint is one connectapi request. URL joins base (the connectapi host) and the path; it
 // never reads the hosts itself.
 type Endpoint struct {
-	Name, Type, AliasOf string      // Type: daily, aggregated, activity, list; AliasOf: same URL as that endpoint
+	Name, Type, AliasOf string      // Type: daily, aggregated, activity, list, personal; AliasOf: same URL as that endpoint
 	Header              http.Header // extra request headers, or nil
 	URL                 func(base string, p Params) string
 }
@@ -122,9 +122,35 @@ var listList = []Endpoint{
 	{Name: "social_profile", Type: "list", URL: func(base string, _ Params) string { return base + "/userprofile-service/socialProfile" }},
 }
 
+func personal(name string, path func(p Params) string) Endpoint {
+	return Endpoint{Name: name, Type: "personal", URL: func(base string, p Params) string { return base + path(p) }}
+}
+
+// personalList holds the Personal API paths that connectapi spells differently. Each takes
+// Start and End and answers one entry per day. The Personal API host also answers
+// daily_steps, agg_weigh_ins, body_battery, hrv and activities_by_date at their connectapi
+// paths, and 404 to the rest of the table (measured 2026-10-24).
+var personalList = []Endpoint{
+	// {"data": [...]}, at most 90 days per request: steps, calories, heart rate, stress,
+	// intensity minutes, Body Battery, respiration and pulse ox in one row per day.
+	personal("personal_daily_summaries", func(p Params) string {
+		return "/usersummary-service/v2/dailysummaries?startDate=" + p.Start + "&endDate=" + p.End
+	}),
+	// [...] of dailySleepDTO shaped rows, at most 31 days per request.
+	personal("personal_sleep", func(p Params) string {
+		return "/sleep-service/sleep/dailySleepSummariesByDate?startDate=" + p.Start + "&endDate=" + p.End
+	}),
+	// {"hrvSummaries": [...]} of hrvSummary shaped rows, at most 90 days per request.
+	personal("personal_hrv", func(p Params) string { return "/hrv-service/hrv/daily/" + p.Start + "/" + p.End }),
+	// [...] of the rows body_battery answers for one day, at most 31 days per request.
+	personal("personal_body_battery", func(p Params) string {
+		return "/wellness-service/wellness/bodyBattery/reports/daily?startDate=" + p.Start + "&endDate=" + p.End
+	}),
+}
+
 var endpoints = func() map[string]Endpoint {
 	m := map[string]Endpoint{}
-	for _, list := range [][]Endpoint{dailyList, aggregatedList, activityList, listList} {
+	for _, list := range [][]Endpoint{dailyList, aggregatedList, activityList, listList, personalList} {
 		for _, ep := range list {
 			m[ep.Name] = ep
 		}
@@ -164,3 +190,8 @@ func Activity() []Endpoint { return cloneAll(activityList) }
 
 // List returns the activity list, goals and the social profile. Each call returns a new copy.
 func List() []Endpoint { return cloneAll(listList) }
+
+// PersonalRanges returns the Personal API range endpoints that have no connectapi twin, in a fixed
+// order. Request them with a Client whose Tokens hold a Personal API key. Each call returns a
+// new copy.
+func PersonalRanges() []Endpoint { return cloneAll(personalList) }

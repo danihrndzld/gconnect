@@ -59,10 +59,10 @@ var (
 )
 
 // Hosts names the Garmin hosts. The zero value is the real Garmin; tests set every field to one fake.
-type Hosts struct{ SSO, DIAuth, ConnectAPI, Consumer string }
+type Hosts struct{ SSO, DIAuth, ConnectAPI, Consumer, PersonalAPI string }
 
-// SameHost points all four hosts at base.
-func SameHost(base string) Hosts { return Hosts{base, base, base, base} }
+// SameHost points all five hosts at base.
+func SameHost(base string) Hosts { return Hosts{base, base, base, base, base} }
 
 func or(v, real string) string {
 	if v != "" {
@@ -75,6 +75,15 @@ func (h Hosts) sso() string        { return or(h.SSO, "https://sso.garmin.com") 
 func (h Hosts) diauth() string     { return or(h.DIAuth, "https://diauth.garmin.com") }
 func (h Hosts) connectAPI() string { return or(h.ConnectAPI, "https://connectapi.garmin.com") }
 func (h Hosts) consumer() string   { return or(h.Consumer, "https://thegarth.s3.amazonaws.com") }
+func (h Hosts) personalAPI() string {
+	return or(h.PersonalAPI, "https://personal.connectapi.garmin.com")
+}
+
+// PersonalTokenPath is where the Personal API trades a key for a 24 hour access token.
+const PersonalTokenPath = "/personalapitoken-service/personal-api/personal-api-key/token"
+
+// personalTTL is the access token lifetime Garmin documents, used when the token has no exp.
+const personalTTL = 24 * 60 * 60
 
 // LoginCode names why a sign in failed.
 type LoginCode string
@@ -104,7 +113,7 @@ var (
 	// user to sign in again.
 	ErrSessionDead = errors.New("gconnect: the saved login is no longer valid")
 	// ErrNoTokens means Refresh or Fresh got tokens whose Kind is KindNone.
-	ErrNoTokens = errors.New("gconnect: the tokens hold neither a DI nor a legacy login")
+	ErrNoTokens = errors.New("gconnect: the tokens hold no DI login, legacy login or Personal API key")
 )
 
 // signInTimeout bounds each sign in and refresh request, whatever the HTTP client.
@@ -216,6 +225,11 @@ func jwtClaims(token string) claims {
 // DI, the mobile UA for legacy.
 func Headers(t *Tokens) http.Header {
 	h, access := http.Header{}, ""
+	if t.isPersonal() { // the Personal API wants only the bearer token
+		h.Set("Authorization", "Bearer "+t.Personal.AccessToken)
+		h.Set("Accept", "application/json")
+		return h
+	}
 	if t.DI != nil {
 		for _, kv := range nativeHeaders {
 			h[kv[0]] = []string{kv[1]}
@@ -580,9 +594,13 @@ func (a *Auth) Fresh(ctx context.Context, t *Tokens, margin time.Duration) (tok 
 
 // Refresh returns new tokens without saving them. It returns
 // ErrSessionDead only on an answer that proves the login dead (a 400 or 401 from diauth, a
-// 401 from the OAuth2 exchange, or a DI login without a refresh token); any other error means
+// 401 from the OAuth2 exchange, a DI login without a refresh token, or a 400 or 401 when a
+// Personal API key buys a new access token); any other error means
 // the caller keeps the old tokens.
 func (a *Auth) Refresh(ctx context.Context, t *Tokens) (*Tokens, error) {
+	if t.isPersonal() {
+		return a.ExchangeAPIKey(ctx, t.Personal.APIKey)
+	}
 	if t.DI != nil {
 		if t.DI.RefreshToken == "" {
 			return nil, fmt.Errorf("%w: it has no refresh token", ErrSessionDead)
@@ -609,4 +627,45 @@ func (a *Auth) Refresh(ctx context.Context, t *Tokens) (*Tokens, error) {
 		return nil, fmt.Errorf("the Garmin token refresh failed: %w", err)
 	}
 	return &Tokens{OAuth1: t.OAuth1, OAuth2: o2, Consumer: t.Consumer}, nil
+}
+
+// ExchangeAPIKey trades a Personal API key for a 24 hour access token, in one request, and
+// returns the tokens without saving them. A 400 or 401 means Garmin refused the key (wrong,
+// expired or deleted) and wraps ErrSessionDead; a 429, a 5xx or a network error is a plain
+// error and the caller keeps what it has.
+func (a *Auth) ExchangeAPIKey(ctx context.Context, key string) (*Tokens, error) {
+	if key == "" {
+		return nil, fmt.Errorf("%w: the API key is empty", ErrSessionDead)
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", a.Hosts.personalAPI()+PersonalTokenPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "ApiKey "+key)
+	req.Header.Set("Accept", "application/json")
+	status, body, err := do(a.client(), req)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("the Personal API token request failed: %s", Redact(err.Error()))
+	case status == 400 || status == 401:
+		return nil, fmt.Errorf("%w (Personal API token HTTP %d)", ErrSessionDead, status)
+	case status == 429:
+		return nil, errors.New("Garmin is rate limiting Personal API token requests (HTTP 429)")
+	case status != 200:
+		return nil, fmt.Errorf("the Personal API token request answered HTTP %d: %s", status, preview(body))
+	}
+	// Garmin answers with the bare JWT; a JSON string holding it is read the same way.
+	access := strings.TrimSpace(string(body))
+	if strings.HasPrefix(access, `"`) {
+		_ = json.Unmarshal([]byte(access), &access)
+	}
+	if access == "" || strings.ContainsAny(access, " \t\r\n{}<") {
+		return nil, fmt.Errorf("the Personal API token answer is not a token: %s", preview(body))
+	}
+	exp := int64(jwtClaims(access).Exp)
+	if exp == 0 {
+		exp = a.now().Unix() + personalTTL
+	}
+	a.log("Personal API access token received")
+	return &Tokens{Personal: &Personal{APIKey: key, AccessToken: access, ExpiresAt: exp}}, nil
 }

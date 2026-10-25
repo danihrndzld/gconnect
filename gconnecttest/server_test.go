@@ -272,11 +272,11 @@ func TestCallsAndHelpers(t *testing.T) {
 			t.Fatalf("payload %s: %v", b, err)
 		}
 	})
-	t.Run("CL-487 Hosts of a fake: all four hosts are its URL", func(t *testing.T) {
+	t.Run("CL-487 Hosts of a fake: all five hosts are its URL", func(t *testing.T) {
 		t.Parallel()
 		srv := gconnecttest.New()
 		defer srv.Close()
-		if h := srv.Hosts(); h != (gconnect.Hosts{SSO: srv.URL(), DIAuth: srv.URL(), ConnectAPI: srv.URL(), Consumer: srv.URL()}) {
+		if h := srv.Hosts(); h != (gconnect.Hosts{SSO: srv.URL(), DIAuth: srv.URL(), ConnectAPI: srv.URL(), Consumer: srv.URL(), PersonalAPI: srv.URL()}) {
 			t.Fatalf("hosts = %+v", h)
 		}
 	})

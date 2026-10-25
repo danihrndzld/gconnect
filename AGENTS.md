@@ -1,6 +1,6 @@
 # gconnect: instructions for coding agents
 
-gconnect is an unofficial Go client for the private Garmin Connect API. It handles the DI mobile sign in with a one-time fallback to the widget and OAuth1 flow, token refresh, a paced HTTP client that knows Garmin's 401, 403, 429 and 204 rules, a table of 38 endpoints, and redaction. `gconnecttest` is a fake Garmin server that consumers test against. Human contributors read [CONTRIBUTING.md](CONTRIBUTING.md); this file holds the same rules plus what an agent needs in order to work safely.
+gconnect is an unofficial Go client for the private Garmin Connect API. It handles the DI mobile sign in with a one-time fallback to the widget and OAuth1 flow, token refresh, a paced HTTP client that knows Garmin's 401, 403, 429 and 204 rules, a table of 42 endpoints, the official Personal API (an API key traded for a 24 hour token), and redaction. `gconnecttest` is a fake Garmin server that consumers test against. Human contributors read [CONTRIBUTING.md](CONTRIBUTING.md); this file holds the same rules plus what an agent needs in order to work safely.
 
 ## Hard rules
 
@@ -9,7 +9,7 @@ gconnect is an unofficial Go client for the private Garmin Connect API. It handl
 3. **Never contact the real Garmin from code or tests.** A `TestMain` in each package refuses any non-loopback dial. Never run a live sign in, and above all never run one in a loop: Garmin answered 429 after about 4 sign ins in 40 minutes on 2026-10-14, and that limit also locks the account out of the official app.
 4. **No real account data in the repository.** Write fixtures by hand. The fake issues synthetic tokens only, and real tokens, cookies, emails or captured Garmin answers never go into a commit, an issue or a log.
 5. **The password is never logged, stored or put into an error.** Every error text that can carry a server answer goes through `Redact`.
-6. **The token refresh contract is load-bearing.** `ErrSessionDead` (and `StopSessionDead` in `Client`) means only a 400 or 401 from the DI refresh grant, a 401 from the legacy OAuth2 exchange, or a second 401 on data after a successful refresh. A network error, a timeout, a 5xx, a 403 or a 429 keeps the tokens and returns a plain error. Consumers delete their saved login on `ErrSessionDead`, so a wrong classification logs users out.
+6. **The token refresh contract is load-bearing.** `ErrSessionDead` (and `StopSessionDead` in `Client`) means only a 400 or 401 from the DI refresh grant, a 401 from the legacy OAuth2 exchange, a 400 or 401 when a Personal API key buys a token, or a second 401 on data after a successful refresh. A network error, a timeout, a 5xx, a 403 or a 429 keeps the tokens and returns a plain error. Consumers delete their saved login on `ErrSessionDead`, so a wrong classification logs users out.
 7. **Exported API changes are deliberate.** While the module is at v0, a minor release may break the API, but every break gets a `CHANGELOG.md` entry under "Changed" with the migration. Raw `json.RawMessage` responses are intentional: typed decoding would lose Garmin's key order and number text.
 
 ## Layout

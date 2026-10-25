@@ -21,10 +21,10 @@
 
 - **Standard library only.** `go.mod` has no `require` line, and an architecture test fails the build if one appears.
 - **It never touches the disk or the environment.** The library imports none of `os`, `path/filepath`, `io/fs` or `syscall`, so you decide where the tokens live.
-- **Raw JSON.** All 38 endpoints return the bytes exactly as Garmin sent them, with Garmin's key order and number text intact.
+- **Raw JSON.** All 42 endpoints return the bytes exactly as Garmin sent them, with Garmin's key order and number text intact.
 - **A fake Garmin server for your tests.** `gconnecttest` serves both sign in flows, the token refresh and the data API on a loopback port.
 - **Rate limit aware.** The client waits 500 ms between requests, honors `Retry-After` up to 60 s, and stops a run after 5 refused requests in a row.
-- **Well tested.** 238 test cases, 171 of them labeled with a test design technique, reach 99.8 % statement coverage. CI fails under 95 %.
+- **Well tested.** 265 test cases, 236 of them labeled with a test design technique, reach 99.3 % statement coverage. CI fails under 95 %.
 
 ## Contents
 
@@ -32,6 +32,7 @@
 - [Quick start](#quick-start)
 - [Sign in](#sign-in)
 - [Tokens and refresh](#tokens-and-refresh)
+- [Personal API key](#personal-api-key)
 - [Rate limits](#rate-limits)
 - [Results and stop reasons](#results-and-stop-reasons)
 - [Endpoints](#endpoints)
@@ -57,7 +58,8 @@ gconnect needs Go 1.24 or newer.
 | Older web sign in (widget and OAuth1) | Supported. It is tried once, only when the mobile flow is blocked. |
 | Token refresh | Supported for both kinds of login. |
 | Two step verification (MFA) | Not supported. `Login` returns the code `MFARequired`. |
-| Endpoints | 38 named endpoints: daily metrics, date ranges, activity splits, activity lists, goals and the profile. |
+| Endpoints | 42 named endpoints: daily metrics, date ranges, activity splits, activity lists, goals, the profile, and 4 Personal API ranges. |
+| Personal API | `Auth.ExchangeAPIKey` trades a key from Garmin's Personal API page for a 24 hour access token; `Client` then reads from `personal.connectapi.garmin.com`. |
 
 ## Quick start
 
@@ -146,11 +148,34 @@ Every failure is a `*gconnect.LoginError`. Its `Msg` never contains the password
 
 ## Tokens and refresh
 
-`Tokens` holds one login: `DI` for the mobile flow, or `OAuth1`, `OAuth2` and `Consumer` for the older flow. The JSON field names match the ones Garmin and the garth project use, so you can marshal the struct as it is.
+`Tokens` holds one login: `DI` for the mobile flow, `OAuth1`, `OAuth2` and `Consumer` for the older flow, or `Personal` for a Personal API key. The JSON field names match the ones Garmin and the garth project use, so you can marshal the struct as it is.
 
 `Auth.Fresh` refreshes the tokens when the access token expires within a margin you choose, and tells you whether it did. `Client` calls it before every request with a 15 minute margin, and calls `Refresh` once more after a 401. Each time it gets new tokens it calls `Client.OnTokens`, which is where you save them. If `OnTokens` returns an error, the client logs a warning with the code `SAVE_FAILED` and keeps going with the new tokens in memory.
 
 `Refresh` returns `ErrSessionDead` only when Garmin proves the login is dead: a 400 or 401 from the DI refresh, a 401 from the older flow's token exchange, or a DI login with no refresh token. A network error, a 5xx, a 403 or a 429 never invalidates a saved login. `Refresh` returns a plain error in those cases, and you should keep the old tokens and try again later. `Fresh` and `Refresh` return `ErrNoTokens` when the tokens hold no complete login.
+
+## Personal API key
+
+Since October 2026 Garmin offers an official, read only Personal API. A user creates a key at <https://connect.garmin.com/app/settings/personalApiToken> (it lives 30, 90, 180 or 365 days and Garmin shows it once). No password, MFA or SSO rate limit is involved.
+
+```go
+a := &gconnect.Auth{}
+tok, err := a.ExchangeAPIKey(ctx, key) // one POST; save tok as you save any login
+c := &gconnect.Client{Auth: a, Tokens: tok, OnTokens: save}
+ep, _ := gconnect.Lookup("personal_daily_summaries")
+r := c.Get(ctx, ep, gconnect.Params{Start: "2026-10-01", End: "2026-10-20"})
+```
+
+`Tokens.Personal` holds the key and the current access token, and `Kind` answers `KindPersonal`. Each access token lives 24 hours and has no refresh token, so `Refresh` buys the next one with the key. A 400 or 401 on that request means Garmin refused the key (wrong, expired or deleted) and returns `ErrSessionDead`; a 429, a 5xx or a network error is a plain error.
+
+The Personal API host answers only its documented paths and 404 to the rest. On 2026-10-24 it answered these names from the table: `hrv`, `body_battery`, `daily_steps`, `agg_weigh_ins` and `activities_by_date`, plus the four `PersonalRanges()` endpoints below. Training readiness, training status, VO2 max, endurance and hill scores, race predictions, activity splits, goals, blood pressure and the social profile answered 404, so a caller that needs them still needs a sign in.
+
+| Name | Range limit | Answer |
+| --- | --- | --- |
+| `personal_daily_summaries` | 90 days | `{"data": [...]}`: steps, floors, calories, heart rate, stress, intensity minutes, Body Battery, respiration and pulse ox per day |
+| `personal_sleep` | 31 days | `[...]` of `dailySleepDTO` shaped rows |
+| `personal_hrv` | 90 days | `{"hrvSummaries": [...]}` of `hrvSummary` shaped rows |
+| `personal_body_battery` | 31 days | `[...]` of the rows `body_battery` answers for one day |
 
 ## Rate limits
 
@@ -183,7 +208,7 @@ Once a run has stopped, `Client.Stopped` returns a `*StopError`, and every later
 
 ## Endpoints
 
-`Daily()`, `Aggregated()`, `Activity()` and `List()` return the endpoint tables, and `Lookup(name)` finds one by name. Each call returns a copy you may change.
+`Daily()`, `Aggregated()`, `Activity()`, `List()` and `PersonalRanges()` return the endpoint tables, and `Lookup(name)` finds one by name. Each call returns a copy you may change.
 
 | Type | Params | Names |
 | --- | --- | --- |
@@ -191,6 +216,7 @@ Once a run has stopped, `Client.Stopped` returns a `*StopError`, and every later
 | aggregated | `Start`, `End`, and `DisplayName` for `race_predictions` | `blood_pressure`, `agg_weigh_ins`, `daily_steps`, `weekly_steps`, `weekly_intensity`, `body_composition`, `progress_summary`, `race_predictions`, `lactate_threshold`, `cycling_ftp`, `fitness_age`, `hill_score` |
 | activity | `ActivityID` | `activity_splits` |
 | list | `Start`, `End`, `Offset`, `Limit` (0 means 20) for `activities_by_date` | `activities_by_date`, `goals`, `social_profile` |
+| personal | `Start`, `End` | `personal_daily_summaries`, `personal_sleep`, `personal_hrv`, `personal_body_battery` |
 
 `stats` and `user_summary` share one URL, as do `stress` and `all_day_stress`, and `training_readiness` and `morning_training_readiness`. The second name of each pair has `AliasOf` set to the first. Garmin accepts at most 28 days per `daily_steps` request, so split longer ranges yourself. `Client.Profile` returns the display name that six daily endpoints need.
 

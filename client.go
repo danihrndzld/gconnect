@@ -183,9 +183,14 @@ func tag(name string) string {
 	return " [" + name + "]"
 }
 
-// Get requests ep with p from the connectapi host.
+// Get requests ep with p from the connectapi host, or from the Personal API host when Tokens
+// holds a Personal API key.
 func (c *Client) Get(ctx context.Context, ep Endpoint, p Params) Result {
-	return c.get(ctx, ep.Name, ep.URL(c.Auth.Hosts.connectAPI(), p), ep.Header)
+	base := c.Auth.Hosts.connectAPI()
+	if c.Tokens != nil && c.Tokens.Kind() == KindPersonal {
+		base = c.Auth.Hosts.personalAPI()
+	}
+	return c.get(ctx, ep.Name, ep.URL(base, p), ep.Header)
 }
 
 // GetURL requests a full URL with extra headers; it has no endpoint name, so a 403 on it

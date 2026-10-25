@@ -34,12 +34,23 @@ type Consumer struct {
 	Secret string `json:"consumer_secret"`
 }
 
-// Tokens holds one login: DI, or OAuth1 + OAuth2 + Consumer for the older flow.
+// Personal is a Personal API key and the access token it last bought. The key comes from
+// connect.garmin.com/app/settings/personalApiToken and lives 30 to 365 days; each access
+// token lives 24 hours and has no refresh token, so the key buys the next one.
+type Personal struct {
+	APIKey      string `json:"api_key"`
+	AccessToken string `json:"access_token,omitempty"`
+	ExpiresAt   int64  `json:"expires_at,omitempty"`
+}
+
+// Tokens holds one login: DI, OAuth1 + OAuth2 + Consumer for the older flow, or a Personal
+// API key.
 type Tokens struct {
 	DI       *DI       `json:"di,omitempty"`
 	OAuth1   *OAuth1   `json:"oauth1,omitempty"`
 	OAuth2   *OAuth2   `json:"oauth2,omitempty"`
 	Consumer *Consumer `json:"consumer,omitempty"`
+	Personal *Personal `json:"personal,omitempty"`
 }
 
 // Kind says which login a Tokens value holds.
@@ -50,14 +61,21 @@ const (
 	KindNone Kind = iota
 	KindDI
 	KindLegacy
+	KindPersonal // data comes from the Personal API host, which answers a smaller set of paths
 )
 
 func (t *Tokens) isDI() bool     { return t.DI != nil && t.DI.AccessToken != "" }
 func (t *Tokens) isLegacy() bool { return t.OAuth1 != nil && t.OAuth2 != nil && t.Consumer != nil }
+func (t *Tokens) isPersonal() bool {
+	return t.Personal != nil && t.Personal.APIKey != ""
+}
 
-// Kind is KindNone when the tokens hold neither a complete DI nor a complete legacy login.
+// Kind is KindNone when the tokens hold no complete login. A Personal API key wins over the
+// other two when a value holds more than one.
 func (t *Tokens) Kind() Kind {
 	switch {
+	case t.isPersonal():
+		return KindPersonal
 	case t.isDI():
 		return KindDI
 	case t.isLegacy():
@@ -69,6 +87,9 @@ func (t *Tokens) Kind() Kind {
 // AccessExpiresAt is the access token's expiry in unix seconds. The OAuth1 token mints new
 // OAuth2 tokens, so a legacy login's refresh expiry does not matter.
 func (t *Tokens) AccessExpiresAt() int64 {
+	if t.isPersonal() {
+		return t.Personal.ExpiresAt
+	}
 	if t.isDI() {
 		return t.DI.ExpiresAt
 	}

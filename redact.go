@@ -30,8 +30,8 @@ func IsSecretKey(key string) bool {
 
 var (
 	urlParamRE   = regexp.MustCompile(`([?&])([^=&]+)=([^&]*)`)
-	authHeaderRE = regexp.MustCompile(`(?i)(Authorization:\s*)(Bearer|Basic)\s+\S+`)
-	bearerRE     = regexp.MustCompile(`(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+`)
+	authHeaderRE = regexp.MustCompile(`(?i)(Authorization:\s*)(Bearer|Basic|ApiKey)\s+\S+`)
+	bearerRE     = regexp.MustCompile(`(?i)\b(Bearer|Basic|ApiKey)\s+[A-Za-z0-9._~+/=-]+`)
 	cookieRE     = regexp.MustCompile(`(?i)((?:set-)?cookie:\s*)[^\r\n]+`)
 	jwtRE        = regexp.MustCompile(`eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`)
 	jsonPairRE   = regexp.MustCompile(`"([^"]+)"\s*:\s*"([^"]*)"`)
@@ -52,7 +52,7 @@ func redactParams(re *regexp.Regexp, s string) string {
 // RedactURL replaces the value of every secret query parameter in u with REDACTED.
 func RedactURL(u string) string { return redactParams(urlParamRE, u) }
 
-// Redact hides secrets in free text: Bearer and Basic values, cookie headers,
+// Redact hides secrets in free text: Bearer, Basic and ApiKey values, cookie headers,
 // JWT shaped strings, JSON pairs with secret keys, and secret query values.
 func Redact(s string) string {
 	s = authHeaderRE.ReplaceAllString(s, "${1}${2} REDACTED")
