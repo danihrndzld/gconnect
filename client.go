@@ -45,7 +45,7 @@ type StopError struct {
 // Error returns Msg.
 func (e *StopError) Error() string { return e.Msg }
 
-// Client is a paced, rate limit aware GET client for connectapi.
+// Client is a paced, rate limit aware GET client for connectapi and the Personal API.
 // It is not safe for concurrent requests: an export asks one thing at a time, and Tokens,
 // the pause and the 403 streak are not guarded. Only Stopped may be called from another goroutine.
 type Client struct {

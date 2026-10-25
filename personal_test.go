@@ -248,7 +248,7 @@ func TestPersonalClient(t *testing.T) {
 
 func TestPersonalEndpoints(t *testing.T) {
 	t.Parallel()
-	t.Run("CL-502 PersonalRanges: the 4 range paths of Garmin's Python client, type personal", func(t *testing.T) {
+	t.Run("CL-502 PersonalRanges: the 5 paths of Garmin's Python client, type personal", func(t *testing.T) {
 		t.Parallel()
 		p := gconnect.Params{Start: "2026-10-01", End: "2026-10-07"}
 		want := map[string]string{
@@ -256,6 +256,7 @@ func TestPersonalEndpoints(t *testing.T) {
 			"personal_sleep":           "http://x/sleep-service/sleep/dailySleepSummariesByDate?startDate=2026-10-01&endDate=2026-10-07",
 			"personal_hrv":             "http://x/hrv-service/hrv/daily/2026-10-01/2026-10-07",
 			"personal_body_battery":    "http://x/wellness-service/wellness/bodyBattery/reports/daily?startDate=2026-10-01&endDate=2026-10-07",
+			"personal_fitness_age":     "http://x/fitnessage-service/fitnessage/v2/2026-10-07",
 		}
 
 		got := gconnect.PersonalRanges()

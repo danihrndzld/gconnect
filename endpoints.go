@@ -127,7 +127,7 @@ func personal(name string, path func(p Params) string) Endpoint {
 }
 
 // personalList holds the Personal API paths that connectapi spells differently. Each takes
-// Start and End and answers one entry per day. The Personal API host also answers
+// Start and End and answers one entry per day, except personal_fitness_age, which reads End. The Personal API host also answers
 // daily_steps, agg_weigh_ins, body_battery, hrv and activities_by_date at their connectapi
 // paths, and 404 to the rest of the table (measured 2026-10-24).
 var personalList = []Endpoint{
@@ -142,6 +142,8 @@ var personalList = []Endpoint{
 	}),
 	// {"hrvSummaries": [...]} of hrvSummary shaped rows, at most 90 days per request.
 	personal("personal_hrv", func(p Params) string { return "/hrv-service/hrv/daily/" + p.Start + "/" + p.End }),
+	// {"fitnessAge", "chronologicalAge", "achievableFitnessAge", "components", ...} on End.
+	personal("personal_fitness_age", func(p Params) string { return "/fitnessage-service/fitnessage/v2/" + p.End }),
 	// [...] of the rows body_battery answers for one day, at most 31 days per request.
 	personal("personal_body_battery", func(p Params) string {
 		return "/wellness-service/wellness/bodyBattery/reports/daily?startDate=" + p.Start + "&endDate=" + p.End

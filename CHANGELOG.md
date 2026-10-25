@@ -9,7 +9,7 @@ All notable changes to this module. The format follows [Keep a Changelog](https:
 ### Added
 
 - The official Garmin Personal API. `Auth.ExchangeAPIKey` trades a key from connect.garmin.com/app/settings/personalApiToken for a 24 hour access token; `Tokens.Personal` and `KindPersonal` hold it; `Refresh` and `Fresh` buy the next token with the key; `Client.Get` reads from `Hosts.PersonalAPI` (default `https://personal.connectapi.garmin.com`) for such tokens; `Headers` sends only the Bearer token.
-- `PersonalRanges()`: `personal_daily_summaries`, `personal_sleep`, `personal_hrv` and `personal_body_battery`, the range paths the Personal API spells differently from connectapi. `PersonalTokenPath` names the token path.
+- `PersonalRanges()`: `personal_daily_summaries`, `personal_sleep`, `personal_hrv`, `personal_body_battery` and `personal_fitness_age`, the paths the Personal API spells differently from connectapi. `PersonalTokenPath` names the token path.
 - `Redact` hides `ApiKey` header values.
 - `gconnecttest`: the token route (`Control.APIKey`, default `right-api-key`, and `Control.APIKeyStatus`), and a Personal API token gets 404 outside the paths the real Personal API answers.
 

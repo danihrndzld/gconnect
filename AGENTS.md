@@ -1,6 +1,6 @@
 # gconnect: instructions for coding agents
 
-gconnect is an unofficial Go client for the private Garmin Connect API. It handles the DI mobile sign in with a one-time fallback to the widget and OAuth1 flow, token refresh, a paced HTTP client that knows Garmin's 401, 403, 429 and 204 rules, a table of 42 endpoints, the official Personal API (an API key traded for a 24 hour token), and redaction. `gconnecttest` is a fake Garmin server that consumers test against. Human contributors read [CONTRIBUTING.md](CONTRIBUTING.md); this file holds the same rules plus what an agent needs in order to work safely.
+gconnect is an unofficial Go client for the private Garmin Connect API. It handles the DI mobile sign in with a one-time fallback to the widget and OAuth1 flow, token refresh, a paced HTTP client that knows Garmin's 401, 403, 429 and 204 rules, a table of 43 endpoints, the official Personal API (an API key traded for a 24 hour token), and redaction. `gconnecttest` is a fake Garmin server that consumers test against. Human contributors read [CONTRIBUTING.md](CONTRIBUTING.md); this file holds the same rules plus what an agent needs in order to work safely.
 
 ## Hard rules
 
