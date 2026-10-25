@@ -53,7 +53,7 @@ Take the next free number for the prefix. Expected values come from documented b
 
 ## Test report (optional)
 
-`scripts/report/run.sh` runs the suite with the race detector and coverage. It converts the output to JUnit XML and a coverage summary, writes `reporte.json`, and renders a PDF report into `reportes-pruebas/<date>-gconnect/`, which is gitignored. It needs `uv` and the `testing-and-continuous-delivery` skill. Set `SKILL=/path/to/skill` if the skill is not in `~/.claude/skills`. The judgment parts of the report (risks, why each technique fits, the derivations) live in `scripts/report/build_report_json.py`. Update them when you add a new kind of test.
+`scripts/report/run.sh` runs the suite with the race detector and coverage, converts the output to JUnit XML and a coverage summary, writes `report.json`, and renders `report.html`, `report.pdf` and `summary.html` into `reportes-pruebas/<date>-gconnect/`, which is gitignored. It needs the art-of-cicd skill (github.com/danihrndzld/skills); set `ART_OF_CICD=/path/to/art-of-cicd` if it is not in `~/.claude/skills`. CI uploads the JUnit XML and the coverage summary as the `test-report` artifact.
 
 ## Pull requests
 

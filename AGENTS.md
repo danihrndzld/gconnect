@@ -24,7 +24,7 @@ gconnect is an unofficial Go client for the private Garmin Connect API. It handl
 | `redact.go` | `Redact`, `RedactURL`. |
 | `gconnecttest/server.go` | The fake: `New`, `Hosts`, `Handle` (the longest prefix wins), `Set`, `Control` (a copy), `Calls`, `JWT`. |
 | `arch_test.go`, `ids_test.go` | The architecture rules, and one owner per test ID. |
-| `scripts/report/` | Builds the PDF test report (see CONTRIBUTING.md). |
+| `scripts/report/` | Builds the HTML and PDF test report with the art-of-cicd skill (see CONTRIBUTING.md). |
 
 ## Commands
 
